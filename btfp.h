@@ -52,6 +52,7 @@ struct btfp_sc {
 	uint16_t 			YRarea;	 	/* Year Area offset						*/
 	uint8_t				hasGPS; 	/* GPS present flag						*/
 	uint8_t				pktrdy;		/* GPS packet ready for pickup			*/
+	uint8_t				timeformat;
 };
 /* 
  * char device driver stuff 
@@ -153,6 +154,11 @@ struct	btfpctl		{							/* driver control stuff */
 		uint8_t		id;
 		uint32_t	u32;
 }__attribute__((packed));
+struct  set_unixtime	{
+		uint8_t		id;
+		uint32_t	unix_time;
+		uint32_t	zero_filler;
+}__attribute__((packed));
 union btfp_ioctl_out	{						/* best declared volatile */
 		struct		btfp_inarea	inarea;			/* pass cmd/subcmd in */
 		struct		timereg		timereg;		/* card registers */
@@ -170,9 +176,32 @@ union btfp_ioctl_out	{						/* best declared volatile */
 		struct		model		model;			/* model type, 635/637 */
 		struct		serial		serial;			/* serial number */
 		struct		btfpctl		btfpctl;		/* driver control */
+		struct		set_unixtime	set_unixtime;		/* set unixtime */
 		/* XXX need biggest of data returned in ioctl calls, finish this */
 		/* you are HERE XXX */
 }__attribute__((packed));
+
+/*
+ * t0 and t1 are the machine time taken with clock_gettime() before and after latching time
+ * into timereg registers. We can use this to get an approximate idea
+ * of the measurement PCI latency without having having to worry with the overhead of the
+ * system call.
+ * Assuming that PCI write and PCI reads are the dominant factor, and assuming that there
+ * is no arbitration, we can correlate btm latching with the idea of local time by
+ * simply doing t0 + (t1 - t0) / 2. Further increase in precision can be done by better
+ * adjusting for PCI access times. For best results, make sure the card is the only card on
+ * its PCI bus, so to have deterministic times.
+ */
+struct btfp_ioctl_gettime {
+	struct timespec t0;
+	struct timespec time;
+	struct timespec t1;
+	uint32_t ns_precision;
+	uint8_t locked; /* 1 if time is locked, 0 if freerunning */
+	uint8_t timeoff; /* 1 if time offset > microsecond, 0 otherwise */
+	uint8_t freqoff; /* 1 if freq offset > 10^-8, 0 otherwise */
+};
+
 /*
  * DPRAM is BAR1 based, 0x1000 bytes long.
  *
@@ -418,10 +447,11 @@ union btfp_ioctl_out	{						/* best declared volatile */
  * X   5  for mode 0, else X   2
  */
 #define TFP_MR_FREQOFF	 0x04000000		/* frequency offset 0<|>1 10-8		*/
+#define TFP_WRITE_UNIX_TIME			253		/* write unix time */
+#define TFP_READ_UNIX_TIME			254		/* read unix time */
 /*
  * IOCTL call names for FreeBSD
  */
-#if OPSYS==FreeBSD
 #define UBIO 					union btfp_ioctl_out
 #define BTFP_READ_TIME			_IOR('1', TFP_READ_TIME, UBIO) 
 #define BTFP_LATCH_TIMEREG		_IO('1', TFP_LATCH_TIMEREG)
@@ -459,7 +489,8 @@ union btfp_ioctl_out	{						/* best declared volatile */
 #define BTFP_SYNC_RTC			_IO('1', TFP_SYNC_RTC)
 #define	BTFP_BATT_DISCON		_IO('1', TFP_BATT_DISCON)
 #define BTFP_CLOCK_SLEW			_IOW('1', TFP_CLOCK_SLEW, UBIO)
-#endif	/* OPSYS */
+#define BTFP_READ_UNIX_TIME		_IOR('1', TFP_READ_UNIX_TIME, struct btfp_ioctl_gettime)
+#define BTFP_WRITE_UNIX_TIME		_IOW('1', TFP_WRITE_UNIX_TIME, UBIO)
 /*
  * That's all, folks!
  * End of btfp.h

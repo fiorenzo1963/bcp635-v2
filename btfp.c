@@ -23,8 +23,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- */
-/*
  * Driver for Symmetricom bc637PCI-U GPS Synchronized, PCI Time & Frequency
  * Processor.
  *
@@ -38,6 +36,89 @@
  * firmware DT1000 rev 42712, board type 12083.
  *
  * Current interrupt handler code is lacking in several respects. See XXX
+ *
+ */
+/*
+ * Copyright (c) 2017 Fio Cattaneo fio@cattaneo.us
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * This copyright only applies to then changes made. The original Copyright applies
+ * to the original source.
+ * 
+ * The changes in the BCP635/637 drivers for FreeBSD are as follows:
+ * 
+ * * make the kernel driver build and work correctly on FreeBSD Version 11.
+ * 
+ * * make the kernel driver and test applications work correctly on 64 bits platform.
+ * 
+ * * fix issues with btfp_test application.
+ * 
+ * * added two new ioctls:
+ * 
+ * ** BTFP_READ_UNIX_TIME:
+ *    This version is like read time, except that the time is returned in a timespec
+ *    structure. also returned are the kernel time in timespec structure before and
+ *    after the latching of the time value. by averaging the value it is possible to
+ *    have a more accurate time (the whole system call takes about 5 microsecond, while
+ *    the PCI lach takes about 3 microseconds). By taking the middle time as the latch
+ *    time, precision is improved by about 4 microseconds.
+ *    To be more clear, the code is as follows:
+ *       t0 = kern_gettime()
+ *       X = latch_time()
+ *       t1 = kern_gettime()
+ *       ts = read_time_register()
+ *    Assuming that the PCI read request to the board takes about the same time as
+ *    the answer, and that the latch operation takes only a few nanoseconds, we can
+ *    then correlate the timestamp read in 'ts' with the local clock with much higher
+ *    accuracy than it is possible if we were to do this entirely in userland (or not
+ *    do it at all). The local clock time estimate of latch time is
+ *       Tlatch = t0 + (t1 - t0) / 2
+ *    (Tlatch - ts) yields the difference between the time as measured (and disciplined
+ *    by PPS or incoming IRIG) by the board and the time measured by the system.
+ * 
+ * ** BTFP_WRITE_UNIX_TIME: this is like set major time, except that the conversion
+ *    to big endian happens inside the kernel.
+ *    The code also waits for the correct time window before setting time
+ *    (the first 800 milliseconds of the time offset).
+ * 
+ * * added two new test programs:
+ * 
+ * ** btfp_setup: this sets the board in UNIX format, PPS mode (assumes that a PPS
+ *    signal from GPS is fed to PPS in, and assumes that the external code will use
+ *    the GPS serial data to set the major time) and sets major time based off the local clock
+ *    using the new ioctl(). This setup test code will be followed by a new ntpd refclock
+ *    based on these features.
+ *    This kind of setup allows to make use of a cheap old BCP635 board without builtin-GPS by
+ *    adding a generic NMEA GPS receiver with PPS. For testing, I'm using both Garmin 18Lvx as well
+ *    as Neo Ublox7.
+ * 
+ * ** timeck_ux: tests the new ioctl() to retrieve time and calculates corrections outlined above.
+ *
+ * all the above changes are backward compatible with existing code.
+ *
+ * code changes tested on FreeBSD Version 11 on a PCI BCP635 board.
+ *
  */
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -56,17 +137,26 @@
 #include <sys/mutex.h>
 #include <sys/errno.h>
 #include <sys/uio.h>
+#include <sys/syscallsubr.h> /* kern_clock_gettime */
 
 #include "btfp.h"
 #include "ACEiii.h"		/* maps for ACE III GPS on bc637 */
+
+#define DEVNAME		"btfp0"	/* XXX hardcoded, blech */
+
+#define	IOCNUM(x)	((x) & 0xff) /* not sure why this is not defined */
+
+#ifndef htobe32
+#define htobe32(x)	htonl((x))
+#endif
 
 /* Prototypes - PCI bus interface routines */
 
 static int btfp_probe(device_t dev);
 static int btfp_attach(device_t dev);
 static int btfp_detach(device_t dev);
-static void btfp_shutdown(device_t dev);
-static void btfp_ih(void *dmy);	/* interrupt handler */
+static int btfp_shutdown(device_t dev);
+static int btfp_ih(void *dmy);	/* interrupt handler */
 /*
  * Prototypes - internal functions
  */
@@ -79,7 +169,7 @@ static void dpr_write(uint8_t * src, uint16_t offset, uint8_t count);
 static devclass_t btfp_devclass;
 static uint8_t cd_bufr[MAXBUFR];/* to/fro cd_read/cd_write functions */
 static struct btfp_sc *sc;	/* card descriptor, used everywhere */
-static volatile uint32_t blabber;	/* control verbosity */
+static volatile uint32_t blabber = NO_BLAB;	/* control verbosity */
 static volatile uint32_t snoozer;	/* spin & wait time constant */
 
 static struct cdevsw btfp_cdevsw = {
@@ -118,10 +208,12 @@ static driver_t btfp_driver = {
 static int
 btfp_probe(device_t dev)
 {
+	device_printf(dev, "btfp_probe\n");
 	if (pci_read_config(dev, PCIR_VENDOR, 2) == BC637_VENDOR_ID &&
-	    pci_read_config(dev, PCIR_DEVICE, 2) == BC637_DEVICE_ID)
+	    pci_read_config(dev, PCIR_DEVICE, 2) == BC637_DEVICE_ID) {
+		device_printf(dev, "btfp_probe: found\n");
 		return (0);
-	else
+	} else
 		return (ENXIO);
 }
 /*-
@@ -142,13 +234,17 @@ btfp_attach(device_t dev)
 
 	sc = device_get_softc(dev);
 	if (sc == NULL) {
-		device_printf(dev, "softc allocation failed \n");
+		device_printf(dev, "softc allocation failed\n");
 		return (ENXIO);
 	}
 	sc->dev = dev;
 
 	snoozer = SNOOZER;
+#ifdef DEBUG_ATTACH
+	blabber = BLABBERMAX;
+#else
 	blabber = NO_BLAB;
+#endif
 
 	u32 = PCIR_BAR(0);
 	sc->bar0res = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &u32, RF_ACTIVE);
@@ -199,9 +295,8 @@ btfp_attach(device_t dev)
 	u32 = DR_READ(TFP_REG_INTSTAT) & ~TFP_IR_ALL;
 	DR_WRITE(TFP_REG_INTSTAT, u32);
 
-	u32 = bus_setup_intr(dev, sc->irq, INTR_TYPE_MISC, btfp_ih, sc,
-	    &sc->cookiep);
-
+	u32 = bus_setup_intr(dev, sc->irq, INTR_TYPE_MISC,
+			     NULL, (driver_intr_t *)btfp_ih, sc, &sc->cookiep);
 	if (u32 != 0) {
 		device_printf(dev, "cannot establish IRQ handler\n");
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq);
@@ -209,6 +304,7 @@ btfp_attach(device_t dev)
 		cv_destroy(&sc->condvar);
 		return (u32);
 	}
+	device_printf(dev, "intr setup ok\n");
 /*-
  * NB: DPRAM phsical map is :
  * 	+0000 Year
@@ -221,18 +317,23 @@ btfp_attach(device_t dev)
 	sc->Inarea = DP_READ(DPRAM_LEN - 2);
 	sc->Inarea = sc->Inarea << 8;
 	sc->Inarea += DP_READ(DPRAM_LEN - 1);
+	device_printf(dev, "Inarea offset = %x    (0102)\n", sc->Inarea);
 
 	sc->Outarea = DP_READ(DPRAM_LEN - 4);
 	sc->Outarea = sc->Outarea << 8;
 	sc->Outarea += DP_READ(DPRAM_LEN - 3);
+	device_printf(dev, "Outarea offset = %x    (0082)\n", sc->Outarea);
 
 	sc->GPSarea = DP_READ(DPRAM_LEN - 6);
 	sc->GPSarea = sc->GPSarea << 8;
 	sc->GPSarea += DP_READ(DPRAM_LEN - 5);
+	device_printf(dev, "GPSarea offset = %x    (0002)\n", sc->GPSarea);
 
 	sc->YRarea = DP_READ(DPRAM_LEN - 8);
 	sc->YRarea = sc->YRarea << 8;
 	sc->YRarea += DP_READ(DPRAM_LEN - 7);
+	device_printf(dev, "YRarea offset = %x    (0000)\n", sc->YRarea);
+
 /*
  * Set time register format to Unix time, instead of BCD.
  * This should be the powerup state, but be certain
@@ -240,6 +341,7 @@ btfp_attach(device_t dev)
 	DP_WRITE(sc->Inarea, TFP_TIMEREG_FMT);
 	DP_WRITE(sc->Inarea + 1, UNIX_TIME);
 	btfp_do_command(sc);
+	sc->timeformat = UNIX_TIME;
 
 /* get model id, and set GPS status */
 
@@ -248,6 +350,7 @@ btfp_attach(device_t dev)
 	btfp_do_command(sc);
 
 	sc->hasGPS = (DP_READ(sc->Outarea + 5) == '7');
+	device_printf(dev, "hasGPS = %d\n", sc->hasGPS);
 
 	if (sc->hasGPS) {
 		sc->pktrdy = 0;
@@ -302,6 +405,8 @@ btfp_detach(device_t dev)
 {
 	struct btfp_sc *sc = device_get_softc(dev);
 
+	device_printf(dev, "btfp_detach\n");
+
 	bus_teardown_intr(dev, sc->irq, sc->cookiep);
 
 	bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq);
@@ -317,27 +422,32 @@ btfp_detach(device_t dev)
 	}
 	return (0);
 }
-static void
+static int
 btfp_shutdown(device_t dev)
 {
 	struct btfp_sc *sc = device_get_softc(dev);
+	device_printf(dev, "shutdown sc=%p\n", sc);
 	if (sc == NULL)
 		device_printf(dev, "Why are we here? Bye bye\n");
+	return (0);
 }
 /*
  * Handle PCI interrupts received on the IRQ we were assigned.
  * NB: we get called by everybody that yanks on this shared interrupt, so don't
  * futz around.
  */
-static void
+static int
 btfp_ih(void *dmy)
 {
 	struct btfp_sc *sc = dmy;
 	static uint32_t intr;
 
 	intr = DR_READ(TFP_REG_MASK) & DR_READ(TFP_REG_INTSTAT) & TFP_IR_ALL;
-	if (intr == 0)
-		return;
+	device_printf(sc->dev, "btfp_ih sc=%p, intr=%x\n", sc, intr);
+	if (intr == 0) {
+		device_printf(sc->dev, "btfp_ih sc=%p, intr=%x: spurious\n", sc, intr);
+		return (0);
+	}
 /*
  * TFP is knocking, see what it wants.
  */
@@ -399,7 +509,7 @@ btfp_ih(void *dmy)
 		    DR_READ(TFP_REG_ACK), sc->pktrdy);
 	}
 	BTFP_UNLOCK(sc);
-	return;
+	return (0);
 }
 /*
  * Write count bytes from string src[] to offset in DPRAM in context sc
@@ -637,6 +747,133 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
 	return (0);
 }
 /*
+ * read unix time.
+ */
+static int
+read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
+{
+	struct timereg timereg;
+	volatile int tmp;
+	if (sc->timeformat != UNIX_TIME) {
+		device_printf(sc->dev, "btfp0: TFP_READ_UNIX_TIME: timeformat is not UNIX\n");
+		return (EINVAL);
+	}
+	if (blabber > 0)
+		uprintf("btfp0: TFP_READ_UNIX_TIME\n");
+	/*
+	 * FIXME: should hold a spinlock between A and D and turn off local interrupts
+	 */
+	/* A */
+	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t0);
+	/* Latch and return TIME0 and TIME1 registers, providing
+	 * current time. Note: this call point is used by NTP
+	 * reference clock driver 16. */
+	/* B */
+	tmp = DR_READ(TFP_REG_TIMEREQ);
+	/* C */
+	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t1);
+	/* D */
+	timereg.time0 = DR_READ(TFP_REG_TIME0);
+	timereg.time1 = DR_READ(TFP_REG_TIME1);
+	bt->time.tv_sec = (long)timereg.time1 & 0xffffffffL;
+	bt->time.tv_nsec = ((long)timereg.time0 & 0xfffffL) * 1000L +
+			    (long)((timereg.time0 >> 20) & 0xf) * 100L;
+	bt->ns_precision = 100;
+	bt->locked = (timereg.time0 & TFP_MR_FLYWHEEL) == 0 ? 1 : 0;
+	bt->timeoff = (timereg.time0 & TFP_MR_TIMEOFF) == 0 ? 1 : 0;
+	bt->freqoff = (timereg.time0 & TFP_MR_FREQOFF) == 0 ? 1 : 0;
+	if (blabber > 0) {
+		uprintf("btfp0: time=%ld.%09ld, precision=%u, locked=%u, timeoff=%u, freqoff=%u\n", bt->time.tv_sec, bt->time.tv_nsec, bt->ns_precision, bt->locked, bt->timeoff, bt->freqoff);
+		device_printf(sc->dev, "btfp0: read_unix_time: time=%ld.%09ld, precision=%u, locked=%u, timeoff=%u, freqoff=%u\n", bt->time.tv_sec, bt->time.tv_nsec, bt->ns_precision, bt->locked, bt->timeoff, bt->freqoff);
+	}
+	return 0;
+}
+/*
+ * wait the the time offset is between 0.000 and 0.200 seconds before applying
+ * requested time, possibly advancing time request if we go over.
+ */
+static int
+pre_write_unix_time(struct thread *td, struct set_unixtime *su)
+{
+	struct btfp_ioctl_gettime bt;
+	int rc;
+	int i;
+	long current_unix_time;
+	if (sc->timeformat != UNIX_TIME) {
+		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: timeformat is not UNIX\n");
+		return (EINVAL);
+	}
+	/*
+	 * FROM USER MANUAL:
+	 * To prevent ambiguities in the time, the user must issue this command
+	 * in advance of the 800 millisecond point within the one-second epoch,
+	 * referencing the current epoch.
+	 *
+	 *
+	 *
+	 * in order to satisfy the above requirements:
+	 *
+	 * take the current time, then check every 25 milliseconds if the nanoseconds portion is
+	 * below 200 ms, if so, then set time. this can potentially overflow into the next second,
+	 * so make sure to perform a second rollover if that is the case.
+	 *
+	 * caller should expect this call to take up to a bit more than one second.
+	 */
+	if (blabber > 0)
+		uprintf("btftp0: write_unix_time t=%u(%08x), be=%08x\n", su->unix_time, su->unix_time, htonl(su->unix_time));
+	device_printf(sc->dev, "btftp0: [1] write_unix_time t=%u(%08x), be=%08x\n", su->unix_time, su->unix_time, htonl(su->unix_time));
+	/*
+	 * before we actually set the time
+	 */
+	rc = read_unix_time(td, &bt);
+	if (rc < 0) {
+		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: initial READ_TIME failed %d\n", rc);
+		return (rc);
+	}
+	current_unix_time = bt.time.tv_sec;
+	device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: initial time %ld.%09ld\n", bt.time.tv_sec, bt.time.tv_nsec);
+	for (i = 0; i < 50; i++) {
+		rc = read_unix_time(td, &bt);
+		if (rc < 0) {
+			device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: READ_TIME failed %d\n", rc);
+			return (rc);
+		}
+		if (blabber > 0)
+			device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: current time %ld.%09ld\n", i, bt.time.tv_sec, bt.time.tv_nsec);
+		if (bt.time.tv_nsec < 200000000) {
+			device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - current time %ld.%09ld\n", i, bt.time.tv_sec, bt.time.tv_nsec);
+			if (bt.time.tv_sec == current_unix_time) {
+				device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - no rol over %ld/%ld\n", i, current_unix_time, bt.time.tv_sec);
+			} else if (bt.time.tv_sec == current_unix_time + 1) {
+				device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - initial second rolled over %ld/%ld, adding one second\n", i, current_unix_time, bt.time.tv_sec);
+				su->unix_time++;
+			} else {
+				device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - initial second rolled over too much %ld/%ld\n", i, current_unix_time, bt.time.tv_sec);
+				return (-EBUSY);
+			}
+			break;
+		}
+		pause("settime", hz / 25);
+	}
+	if (i >= 50) {
+		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: could not synchronize within one-second epoch\n");
+		return (-EBUSY);
+	}
+	device_printf(sc->dev, "btftp0: [2] write_unix_time t=%u(%08x), be=%08x\n", su->unix_time, su->unix_time, htonl(su->unix_time));
+	/*
+	 *
+	 */
+	su->id = TFP_MAJOR_TIME;
+	/*
+	 * set major time format is BIG ENDIAN.
+	 * it's not at all clear to me why set time is BIG ENDIAN
+	 * and get time is little endian.
+	 */
+	su->unix_time = htobe32(su->unix_time);
+	su->zero_filler = 0U;
+	return 0;
+}
+/*
  * The majority of all userland calls are handled here. GPS r/w support is
  * provided via the read/write file calls.
  */
@@ -649,22 +886,33 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 	static uint8_t *u8_p, len;
 	static union btfp_ioctl_out *btfpctl_p;
 
+	callno = IOCNUM(cmd);	/* mask off the ioctl control info */
+
+	if (blabber >= BLAB_CALLS) {
+		uprintf("btfp0: ioctl cmd %x, arg %x, callno %x\n", (uint32_t)cmd, (uint32_t)*arg, callno);
+	}
+
+	/*
+	 * fast track this call
+	 */
+
 	/* cast some pointers to arg, for compiler happiness */
 	iptr = (struct btfp_inarea *)arg;
 	timereg_p = (struct timereg *)arg;
-	u8_p = (uint8_t *) arg;
-
-	callno = cmd & 0xff;	/* mask off the ioctl control info */
-
-	if (blabber >= BLAB_CALLS) {
-		uprintf("btfp0: ioctl cmd %x, arg %x, callno %x\n",
-		    (uint32_t) cmd, (uint32_t) * arg, callno);
-	}
+	u8_p = (uint8_t *)arg;
 
 	len = 0;
 	rc = 0;
 
 	switch (callno) {
+	case TFP_READ_UNIX_TIME:
+		rc = read_unix_time(td, (struct btfp_ioctl_gettime *)arg);
+		break;
+	case TFP_WRITE_UNIX_TIME:
+		rc = pre_write_unix_time(td, (struct set_unixtime *)arg);
+		if (rc == 0)
+			len = 5;
+		break;
 	case TFP_LATCH_TIMEREG:
 		/* Latch current time into TIME0 & TIME1 registers. */
 		DR_READ(TFP_REG_TIMEREQ);
@@ -792,7 +1040,7 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 		break;
 
 	case TFP_READ_EVENTREG:
-		DR_READ(TFP_REG_EVENTREQ);
+		tmp = DR_READ(TFP_REG_EVENTREQ);
 		timereg_p->time0 = DR_READ(TFP_REG_EVENT0);
 		timereg_p->time1 = DR_READ(TFP_REG_EVENT1);
 		break;
@@ -895,6 +1143,7 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 			/* FALLTHROUGH */
 		case BCD_TIME:
 			len = 2;
+			sc->timeformat = iptr->subcmd;
 			break;
 		default:
 			rc = ENOTTY;
@@ -1098,38 +1347,53 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 		dpr_write(u8_p, sc->Inarea, len);
 		rc = btfp_do_command(sc);
 	}
+
 	return (rc);
 }				/* end btfp_cd_ioctl() function */
+
+/*
+ * not clear to me why this is a singleton driver, given it is,
+ * at least put some protection against multiple cards.
+ */
+static struct cdev *b_tfp_dev = NULL;	/* devfs make/destroy  */
+
 /*
  * Module load/unload event handler.
  */
 static int
 btfp_load(struct module *m, int event, void *arg)
 {
-	static char *devname = "btfp0";	/* XXX hardcoded, blech */
-	static struct cdev *b_tfp_dev;	/* devfs make/destroy  */
 
 	switch (event) {
-
 	case MOD_LOAD:
-		b_tfp_dev = make_dev(&btfp_cdevsw, 0, UID_ROOT, GID_WHEEL,
-		    DEV_PERMISSIONS, devname);
-		uprintf("bc637PCI-U Time & Frequency Processor driver loaded.\n");
-		uprintf("bc637PCI-U TFP device is %s\n", devname);
+		if (b_tfp_dev != NULL) {
+			/* module already loaded */
+			return (ENODEV);
+		}
+		uprintf("Loading bc635/bc637PCI-U Time & Frequency Processor driver.\n");
+		b_tfp_dev = make_dev(&btfp_cdevsw, 0, UID_ROOT, GID_WHEEL, DEV_PERMISSIONS, DEVNAME);
+		uprintf("bc635/bc637PCI-U Time & Frequency Processor driver loaded.\n");
+		uprintf("bc635/bc637PCI-U TFP device is %s\n", DEVNAME);
 		break;
 
 	case MOD_UNLOAD:
+		uprintf("Unloading bc635/bc637PCI-U Time & Frequency Processor driver.\n");
 		destroy_dev(b_tfp_dev);
-		uprintf("bc637PCI-U Time & Frequency Processor driver unloaded.\n");
+		b_tfp_dev = NULL;
+		uprintf("bc635/bc637PCI-U Time & Frequency Processor driver unloaded.\n");
 		break;
 
 	case MOD_SHUTDOWN:
+		uprintf("Shutdown: unloading bc635/bc637PCI-U Time & Frequency Processor driver.\n");
 		destroy_dev(b_tfp_dev);
+		b_tfp_dev = NULL;
+		uprintf("Shutdown: bc635/bc637PCI-U Time & Frequency Processor driver unloaded.\n");
 		break;
 
 	default:
 		return (EINVAL);
 	}
+
 	return (0);
 }
 /*

@@ -1,7 +1,62 @@
 BSD 3-Clause License
 
-Copyright (c) 2017, Fio Cattaneo
+Copyright (c) 2017, Fio Cattaneo.
 All rights reserved.
+
+This driver and its application are based on the original Symmetricom Driver
+available at:
+
+https://www.microsemi.com/product-directory/timing-accessories/4188-pc635pci-v2-irig#resources
+
+This copyright only applies to then changes made. The original Copyright applies
+to the original source.
+
+The changes in the BCP635/637 drivers for FreeBSD are as follows:
+
+* make the kernel driver build and work correctly on FreeBSD Version 11.
+
+* make the kernel driver and test applications work correctly on 64 bits platform.
+
+* fix issues with btfp_test application.
+
+* added two new ioctls:
+
+** BTFP_READ_UNIX_TIME:
+   This version is like read time, except that the time is returned in a timespec
+   structure. also returned are the kernel time in timespec structure before and
+   after the latching of the time value. by averaging the value it is possible to
+   have a more accurate time (the whole system call takes about 5 microsecond, while
+   the PCI lach takes about 3 microseconds). By taking the middle time as the latch
+   time, precision is improved by about 4 microseconds.
+   To be more clear, the code is as follows:
+      t0 = kern_gettime()
+      X = latch_time()
+      t1 = kern_gettime()
+      ts = read_time_register()
+   Assuming that the PCI read request to the board takes about the same time as
+   the answer, and that the latch operation takes only a few nanoseconds, we can
+   then correlate the timestamp read in 'ts' with the local clock with much higher
+   accuracy than it is possible if we were to do this entirely in userland (or not
+   do it at all). The local clock time estimate of latch time is
+      Tlatch = t0 + (t1 - t0) / 2
+   (Tlatch - ts) yields the difference between the time as measured (and disciplined
+   by PPS or incoming IRIG) by the board and the time measured by the system.
+
+** BTFP_WRITE_UNIX_TIME: this is like set major time, except that the conversion
+   to big endian happens inside the kernel.
+   The code also waits for the correct time window before setting time
+   (the first 800 milliseconds of the time offset).
+
+* added two new test programs:
+
+** btfp_setup: this sets the board in UNIX format, PPS mode (assumes that a PPS
+   signal from GPS is fed to PPS in, and assumes that the external code will use
+   the GPS serial data to set the major time) and sets major time based off the local clock
+   using the new ioctl(). This setup test code will be followed by a new ntpd refclock
+   based on these features.
+
+** timeck_ux: tests the new ioctl() to retrieve time and calculates corrections needed
+   to
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
