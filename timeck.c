@@ -15,12 +15,11 @@ int flycheck(int fd, union btfp_ioctl_out *btm);
 int
 main(int argc, char **argv)
 {
-	static int i, fd;
+	static int fd;
 	static uint32_t flywheel;
 
 	static union btfp_ioctl_out btm;
 	const char *btfp_dev = "/dev/btfp0";
-	struct tm majortm;
 
 	if ((fd = open(btfp_dev, O_RDWR)) == -1) {
 		printf("bad open of tfp device %s, fd is %d \n", btfp_dev, fd);
@@ -37,6 +36,7 @@ int
 flycheck(int fd, union btfp_ioctl_out *btm)
 {
 	static int i, flywheel;
+	time_t tm;
 
 	bzero(btm, sizeof(union btfp_ioctl_out));
 
@@ -53,7 +53,8 @@ flycheck(int fd, union btfp_ioctl_out *btm)
 	else
 		printf("not locked %#8x \n", flywheel);
 
-	printf("%s", ctime(&(btm->timereg.time1)));
+	tm = btm->timereg.time1;
+	printf("%s", ctime(&tm));
 
 	return (flywheel);
 }

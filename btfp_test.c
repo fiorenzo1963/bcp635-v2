@@ -103,10 +103,18 @@ main(int argc, char **argv)
 	if ((i = ioctl(fd, BTFP_REQUEST_DATA, &btm)) != 0)
 		printf(" ioctl timefmt failed rc = %x\n", i);
 	else {
+		time_t tm;
+		union btfp_ioctl_out btm1;
+		bzero(&btm1, sizeof(union btfp_ioctl_out));
+
+		if ((i = ioctl(fd, BTFP_READ_TIME, &btm1)) != 0) {
+			printf(" ioctl read_time failed rc = %x\n", i);
+		}
 		printf("req %x time register format is ", btm.timefmt.id);
 		switch (btm.timefmt.format) {
 		case BCD_TIME:
 			printf("BCD\n");
+			time1 = btm1.timereg.time1;
 			majortm.tm_yday = 0xffff0000 & time1;
 			majortm.tm_hour = 0x0000ff00 & time1;
 			majortm.tm_min = 0x000000f0 & time1;
@@ -115,7 +123,8 @@ main(int argc, char **argv)
 			break;
 		case UNIX_TIME:
 			printf("UNIX\n");
-			printf("Local time is %s", ctime((time_t *) (&time1)));
+			tm = btm1.timereg.time1;
+			printf("Local time is %s", ctime(&tm));
 			break;
 		default:
 			printf(" XXX error in timefmt\n");

@@ -9,22 +9,31 @@ Contents :
 
 
 2. ACEiii.h    -  Header file for GPS data structures 
-                 used to communicate with the BC637PCI-U onboard ACEiii GPS receiver
+                  used to communicate with the BC637PCI-U onboard ACEiii GPS receiver
  
 3. btfp.c      -  Driver Source file 
-                 for Symmetricom bc637PCI-U GPS Synchronized, PCI Time & Frequency Processor
+                  for Symmetricom bc637PCI-U GPS Synchronized, PCI Time & Frequency Processor
 
 4. blab.c      -  Source for debugging code in the btfp0; 
-                 controls device driver verbosity level & manipulates wait times
+                  controls device driver verbosity level & manipulates wait times
 
 5. btfp_test.c -  Driver Source file
-                 tests Symmetricom bc637PCI-U board functionality
+                  tests Symmetricom bc637PCI-U board functionality
 
 6. gpst.c      -  Driver Source file
-                 tests a variety of gps functions and displays the results
+                  tests a variety of gps functions and displays the results
 
 7. timeck.c    -  Driver Source file
-                 verifies lock status  
+                  verifies lock status  
+
+8. btfp_setup.c - Driver Source file
+                  sets up driver in UNIX_TIME, PPS mode and sets local time using the
+                  new BTFP_WRITE_UNIX_TIME ioctl.
+                  See btfp.c source for more explanation.
+
+8. timeck_ux.c -  Driver Source file
+                  uses the new BTFP_READ_UNIX_TIME ioctl for higher precision read of timestamp.
+                  
 
 8. refclock_bancomm.c 
                - clock driver for the  Datum/Bancomm bc635VME 

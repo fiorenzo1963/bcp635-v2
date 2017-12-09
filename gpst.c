@@ -470,6 +470,7 @@ gps_time(int fd)
 	static uint32_t rc, ut;
 	static union ieee754 tow, offset;
 	static uint16_t week;
+	time_t tm;
 
 	if ((rc = gps31_req(ACErpt_GPS_time, fd, &response) != 0))
 		return (rc);
@@ -483,9 +484,10 @@ gps_time(int fd)
 	    tow.f, week, week - 1023, offset.f);
 
 	ut = gps2ux(tow.f, week);
-	printf("GPS is %s", ctime(&ut));
-	ut -= (int)offset.f;
-	printf("UTC is %s", ctime(&ut));
+	tm = ut;
+	printf("GPS is %s", ctime(&tm));
+	tm -= (int)offset.f;
+	printf("UTC is %s", ctime(&tm));
 
 	return (0);
 }
@@ -861,6 +863,7 @@ last_computed_fix(int fd)
 	static uint32_t rc, tmp;
 	static struct rx57 *rx57_p;
 	static union ieee754 fixtime;
+	time_t tm;
 
 	if ((rc = gps31_req(ACErpt_last_computed_fix, fd, &response)) != 0)
 		return (rc);
@@ -879,7 +882,8 @@ last_computed_fix(int fd)
 	week = be16toh(rx57_p->week);
 
 	tmp = gps2ux(fixtime.f, week);
-	printf("GPSweek %i + %6.0f s, %s", week, fixtime.f, ctime(&tmp));
+	tm = tmp;
+	printf("GPSweek %i + %6.0f s, %s", week, fixtime.f, ctime(&tm));
 	return (0);
 }
 uint32_t
