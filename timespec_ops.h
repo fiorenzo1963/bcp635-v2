@@ -19,20 +19,12 @@
 			(vvp)->tv_sec++;				\
 			(vvp)->tv_nsec -= 1000000000;			\
 		}							\
-		if ((vvp)->tv_nsec < 0 && (vvp)->tv_sec > 0) {		\
-			(vvp)->tv_sec--;				\
-			(vvp)->tv_nsec += 1000000000;			\
-		}							\
 	} while (0)
 #define	timespecsub(vvp, uvp)						\
 	do {								\
 		(vvp)->tv_sec -= (uvp)->tv_sec;				\
 		(vvp)->tv_nsec -= (uvp)->tv_nsec;			\
-		if ((vvp)->tv_nsec >= 1000000000) {			\
-			(vvp)->tv_sec++;				\
-			(vvp)->tv_nsec -= 1000000000;			\
-		}							\
-		if ((vvp)->tv_nsec < 0 && (vvp)->tv_sec > 0) {		\
+		if ((vvp)->tv_nsec < 0) {				\
 			(vvp)->tv_sec--;				\
 			(vvp)->tv_nsec += 1000000000;			\
 		}							\
