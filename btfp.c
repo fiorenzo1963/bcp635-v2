@@ -119,6 +119,11 @@
  *
  * code changes tested on FreeBSD Version 11 on a PCI BCP635 board.
  *
+ *
+ * NOTE: driver synchronization is very poor. aside from support only one board, it also
+ * is unable to support multiple calls, as operations as not protected end-to-end with a mutex
+ * lock. should redo all synchronization.
+ *
  */
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -286,7 +291,8 @@ btfp_attach(device_t dev)
 		device_printf(dev, "cannot map IRQ line\n");
 		return (ENXIO);
 	}
-	mtx_init(&sc->mutex, device_get_nameunit(dev), "btfp driver", MTX_DEF);
+	mtx_init(&sc->mutex, device_get_nameunit(dev), "btfp lock", MTX_DEF);
+	mtx_init(&sc->spin_mutex, device_get_nameunit(dev), "btfp spinlock", MTX_SPIN);
 	cv_init(&sc->condvar, "btfp bc637PCIu");
 
 	u32 = DR_READ(TFP_REG_MASK) & ~TFP_IR_ALL;
@@ -301,6 +307,7 @@ btfp_attach(device_t dev)
 		device_printf(dev, "cannot establish IRQ handler\n");
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq);
 		mtx_destroy(&sc->mutex);
+		mtx_destroy(&sc->spin_mutex);
 		cv_destroy(&sc->condvar);
 		return (u32);
 	}
@@ -411,6 +418,7 @@ btfp_detach(device_t dev)
 
 	bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq);
 	mtx_destroy(&sc->mutex);
+	mtx_destroy(&sc->spin_mutex);
 	cv_destroy(&sc->condvar);
 
 	pci_disable_io(dev, SYS_RES_MEMORY);
@@ -761,8 +769,10 @@ read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
 	if (blabber > 0)
 		uprintf("btfp0: TFP_READ_UNIX_TIME\n");
 	/*
-	 * FIXME: should hold a spinlock between A and D and turn off local interrupts
+	 * hold a mutex spinlock between A and D and turn off local interrupts
+	 * and to guarantee a consistent result.
 	 */
+	////////////////////////mtx_lock_spin(&sc->spin_mutex);
 	/* A */
 	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t0);
 	/* Latch and return TIME0 and TIME1 registers, providing
@@ -772,9 +782,10 @@ read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
 	tmp = DR_READ(TFP_REG_TIMEREQ);
 	/* C */
 	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t1);
-	/* D */
 	timereg.time0 = DR_READ(TFP_REG_TIME0);
 	timereg.time1 = DR_READ(TFP_REG_TIME1);
+	/* D */
+	////////////////////////mtx_unlock_spin(&sc->spin_mutex);
 	bt->time.tv_sec = (long)timereg.time1 & 0xffffffffL;
 	bt->time.tv_nsec = ((long)timereg.time0 & 0xfffffL) * 1000L +
 			    (long)((timereg.time0 >> 20) & 0xf) * 100L;
@@ -803,6 +814,8 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: timeformat is not UNIX\n");
 		return (EINVAL);
 	}
+
+	BTFP_LOCK(sc);
 	/*
 	 * FROM USER MANUAL:
 	 * To prevent ambiguities in the time, the user must issue this command
@@ -828,6 +841,7 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	rc = read_unix_time(td, &bt);
 	if (rc < 0) {
 		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: initial READ_TIME failed %d\n", rc);
+		BTFP_UNLOCK(sc);
 		return (rc);
 	}
 	current_unix_time = bt.time.tv_sec;
@@ -836,6 +850,7 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 		rc = read_unix_time(td, &bt);
 		if (rc < 0) {
 			device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: READ_TIME failed %d\n", rc);
+			BTFP_UNLOCK(sc);
 			return (rc);
 		}
 		if (blabber > 0)
@@ -849,6 +864,7 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 				su->unix_time++;
 			} else {
 				device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - initial second rolled over too much %ld/%ld\n", i, current_unix_time, bt.time.tv_sec);
+				BTFP_UNLOCK(sc);
 				return (-EBUSY);
 			}
 			break;
@@ -857,6 +873,7 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	}
 	if (i >= 50) {
 		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: could not synchronize within one-second epoch\n");
+		BTFP_UNLOCK(sc);
 		return (-EBUSY);
 	}
 	device_printf(sc->dev, "btftp0: [2] write_unix_time t=%u(%08x), be=%08x\n", su->unix_time, su->unix_time, htonl(su->unix_time));
@@ -871,6 +888,8 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	 */
 	su->unix_time = htobe32(su->unix_time);
 	su->zero_filler = 0U;
+	BTFP_UNLOCK(sc);
+	/* should hold the lock all the way to command */
 	return 0;
 }
 /*

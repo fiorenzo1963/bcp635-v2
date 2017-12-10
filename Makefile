@@ -23,7 +23,7 @@ timeck:	timeck.c btfp.h timespec_ops.h
 	cc timeck.c -o timeck -Wall
 timeck_ux: timeck_ux.c btfp.h timespec_ops.h
 	cc timeck_ux.c -o timeck_ux -Wall
-bcp635_shm: timeck_ux.c btfp.h timespec_ops.h
+bcp635_shm: bcp635_shm.c btfp.h timespec_ops.h
 	cc bcp635_shm.c -o bcp635_shm -Wall
 
 apps: gpst blab btfp_test timeck timeck_ux btfp_setup bcp635_shm

@@ -79,13 +79,13 @@ int read_unix_time(int fd, struct timespec *local_time, struct timespec *bt_time
 		return -1;
 	}
 
-	printf("  bt:  locked = %d\n", bt.locked);
-	printf("  bt: timeoff = %d\n", bt.timeoff);
-	printf("  bt: freqoff = %d\n", bt.locked);
-	printf("  bt: ns_prec = %d\n", bt.ns_precision);
-	printf(" bt0: %ld.%09ld\n", bt.t0.tv_sec, bt.t0.tv_nsec);
-	printf("  bt: %ld.%09ld\n", bt.time.tv_sec, bt.time.tv_nsec);
-	printf(" bt1: %ld.%09ld\n", bt.t1.tv_sec, bt.t1.tv_nsec);
+	//printf("  bt:  locked = %d\n", bt.locked);
+	//printf("  bt: timeoff = %d\n", bt.timeoff);
+	//printf("  bt: freqoff = %d\n", bt.locked);
+	//printf("  bt: ns_prec = %d\n", bt.ns_precision);
+	//printf(" bt0: %ld.%09ld\n", bt.t0.tv_sec, bt.t0.tv_nsec);
+	//printf("  bt: %ld.%09ld\n", bt.time.tv_sec, bt.time.tv_nsec);
+	//printf(" bt1: %ld.%09ld\n", bt.t1.tv_sec, bt.t1.tv_nsec);
 
 	if (bt.locked == 0) {
 		printf("read_local_time: time not locked\n");
@@ -106,12 +106,15 @@ int read_unix_time(int fd, struct timespec *local_time, struct timespec *bt_time
 			       bt1a.tv_sec, bt1a.tv_nsec,
 			       delta.tv_sec, delta.tv_nsec);
 			timespec_sub(&delta1, &bt1a, &bt.time);
-			printf("   d: %ld.%09ld (bt1a - bt reference)\n",
-			       delta1.tv_sec, delta1.tv_nsec);
+			if (delta1.tv_sec == -1L && delta1.tv_nsec > 0) {
+				delta1.tv_sec += 1L;
+				delta1.tv_nsec -= 1000000000L;
+			}
+			//printf("   d: %ld.%09ld (bt1a - bt reference)\n",
+			//       delta1.tv_sec, delta1.tv_nsec);
 			/**/
 			*local_time = bt1a;
 			*bt_time = bt.time;
-			printf("read_unix_time: ok\n");
 			return 0;
 		}
 	} else {
@@ -127,8 +130,10 @@ int main(int argc, char **argv)
 	int count;
 	const char *btfp_dev = "/dev/btfp0";
 	
+	/*
 	setbuf(stdout, NULL);
 	setbuf(stderr, NULL);
+	*/
 	
 	shm = get_shmseg();
 	if (shm == NULL) {
@@ -171,9 +176,9 @@ int main(int argc, char **argv)
 #endif
 		atomic_thread_fence(memory_order_seq_cst);
 		while (shm->valid) {
-			printf("SHM is still valid, not doing anything ****************************\n");
+			//printf("SHM is still valid, not doing anything ****************************\n");
 			atomic_thread_fence(memory_order_seq_cst);
-			usleep(200 * 1000);
+			usleep(400 * 1000);
 		}
 		atomic_thread_fence(memory_order_seq_cst);
 
@@ -183,7 +188,7 @@ int main(int argc, char **argv)
 		shm->count++;
 		atomic_thread_fence(memory_order_seq_cst);
 		if (ret == -1) {
-			printf("loop: ret = %d: LEAP_NOTINSYNC\n", ret);
+			//printf("loop: ret = %d: LEAP_NOTINSYNC\n", ret);
 			shm->leap = LEAP_NOTINSYNC;
 			shm->precision = (-18);
 			atomic_thread_fence(memory_order_seq_cst);
@@ -191,7 +196,7 @@ int main(int argc, char **argv)
 			shm->valid = 1;
 			atomic_thread_fence(memory_order_seq_cst);
 		} else {
-			printf("loop: ret = %d: LEAP_NOWARNING\n", ret);
+			//printf("loop: ret = %d: LEAP_NOWARNING\n", ret);
 			shm->clockTimeStampSec = (time_t)bt_time.tv_sec;
 			shm->clockTimeStampUSec = (int)(bt_time.tv_nsec / 1000);
 			shm->clockTimeStampNSec = (unsigned)bt_time.tv_nsec;

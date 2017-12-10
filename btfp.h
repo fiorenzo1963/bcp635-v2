@@ -44,6 +44,7 @@ struct btfp_sc {
 	bus_space_tag_t		bst1;		/* BAR1 bus tag handle					*/
 	struct resource  	*irq;		/* IRQ line								*/
 	struct mtx			mutex;		/* locking mutex						*/
+	struct mtx			spin_mutex;	/* spin mutex						*/
 	struct cv			condvar;	/* locking condition variable			*/
 	void				*cookiep;	/* IRQ cookie - teardown				*/
 	uint16_t 			Inarea;		/* Input Area offset					*/
