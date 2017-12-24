@@ -77,14 +77,16 @@ void read_unix_time(int fd)
 		if (delta.tv_sec != 0)
 			printf("time delay too high: cannot calculate adjusted time\n");
 		else {
+			long d_ns = 0;
 			delta.tv_nsec = delta.tv_nsec / 2;
 			timespec_sub(&bt1a, &bt.t1, &delta);
 			printf("bt1a: %10ld.%09ld (bt1 local clock adjusted to bt reference -- %ld.%09ld one way PCI bus delay)\n",
 			       bt1a.tv_sec, bt1a.tv_nsec,
 			       delta.tv_sec, delta.tv_nsec);
 			timespec_sub(&delta1, &bt1a, &bt.time);
-			printf("   d: %10ld.%09ld (bt1a - bt reference)\n",
-			       delta1.tv_sec, delta1.tv_nsec);
+			d_ns += delta1.tv_sec * 1000000000;
+			d_ns += delta1.tv_nsec;
+			printf("   d: %10s.%09ld (bt1a - bt reference)\n", "", d_ns);
 
 		}
 	} else {

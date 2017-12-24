@@ -71,6 +71,10 @@
  * * make the kernel driver build and work correctly on FreeBSD Version 11.
  * 
  * * make the kernel driver and test applications work correctly on 64 bits platform.
+ *
+ * * fixed all data structures. now there are no more private data structures, so the
+ *   device driver should be able to easily handle multiple cards. however since i only
+ *   have one card, i left a mutual exclusion code which only allows creating one device.
  * 
  * * fix issues with btfp_test application.
  * 
@@ -160,25 +164,22 @@
 static int btfp_probe(device_t dev);
 static int btfp_attach(device_t dev);
 static int btfp_detach(device_t dev);
-static int btfp_shutdown(device_t dev);
 static int btfp_ih(void *dmy);	/* interrupt handler */
 /*
  * Prototypes - internal functions
  */
-static int btfp_do_command(struct btfp_sc *card);
-static void dpr_read(uint8_t * dest, uint16_t offset, uint8_t count);
-static void dpr_write(uint8_t * src, uint16_t offset, uint8_t count);
+static int btfp_do_command(struct btfp_sc *sc);
+static void dpr_read(struct btfp_sc *sc, uint8_t *dest, uint16_t offset, uint8_t count);
+static void dpr_write(struct btfp_sc *sc, uint8_t *src, uint16_t offset, uint8_t count);
 /*
  * Global variables
  */
 static devclass_t btfp_devclass;
-static uint8_t cd_bufr[MAXBUFR];/* to/fro cd_read/cd_write functions */
-static struct btfp_sc *sc;	/* card descriptor, used everywhere */
 static volatile uint32_t blabber = NO_BLAB;	/* control verbosity */
-static volatile uint32_t snoozer;	/* spin & wait time constant */
+static volatile uint32_t snoozer = 0;	/* spin & wait time constant */
 
 static struct cdevsw btfp_cdevsw = {
-	.d_name = "btfp0",
+	.d_name = "btfp",
 	.d_version = D_VERSION,
 	.d_open = btfp_cd_open,
 	.d_close = btfp_cd_close,
@@ -194,7 +195,6 @@ static device_method_t btfp_methods[] = {
 	DEVMETHOD(device_probe, btfp_probe),
 	DEVMETHOD(device_attach, btfp_attach),
 	DEVMETHOD(device_detach, btfp_detach),
-	DEVMETHOD(device_shutdown, btfp_shutdown),
 
 	/* Bus interface */
 	DEVMETHOD(bus_print_child, bus_generic_print_child),
@@ -205,7 +205,7 @@ static device_method_t btfp_methods[] = {
 static driver_t btfp_driver = {
 	"btfp",			/* used for prefix on device name */
 	btfp_methods,
-	sizeof(struct btfp_sc),
+	sizeof (struct btfp_sc),
 };
 /*
  * Device Probe - find the PCI card we know how to handle.
@@ -216,7 +216,9 @@ btfp_probe(device_t dev)
 	device_printf(dev, "btfp_probe\n");
 	if (pci_read_config(dev, PCIR_VENDOR, 2) == BC637_VENDOR_ID &&
 	    pci_read_config(dev, PCIR_DEVICE, 2) == BC637_DEVICE_ID) {
-		device_printf(dev, "btfp_probe: found\n");
+		device_printf(dev, "btfp_probe: found dev vendor_id=%x, device_id=%x\n",
+			      BC637_VENDOR_ID,
+			      BC637_VENDOR_ID);
 		return (0);
 	} else
 		return (ENXIO);
@@ -236,8 +238,7 @@ btfp_attach(device_t dev)
 {
 	static uint32_t u32;
 	static uint8_t outstring[MAXBUFR];
-
-	sc = device_get_softc(dev);
+	struct btfp_sc *sc = device_get_softc(dev);
 	if (sc == NULL) {
 		device_printf(dev, "softc allocation failed\n");
 		return (ENXIO);
@@ -295,11 +296,11 @@ btfp_attach(device_t dev)
 	mtx_init(&sc->spin_mutex, device_get_nameunit(dev), "btfp spinlock", MTX_SPIN);
 	cv_init(&sc->condvar, "btfp bc637PCIu");
 
-	u32 = DR_READ(TFP_REG_MASK) & ~TFP_IR_ALL;
-	DR_WRITE(TFP_REG_MASK, u32);
+	u32 = DR_READ(sc, TFP_REG_MASK) & ~TFP_IR_ALL;
+	DR_WRITE(sc, TFP_REG_MASK, u32);
 
-	u32 = DR_READ(TFP_REG_INTSTAT) & ~TFP_IR_ALL;
-	DR_WRITE(TFP_REG_INTSTAT, u32);
+	u32 = DR_READ(sc, TFP_REG_INTSTAT) & ~TFP_IR_ALL;
+	DR_WRITE(sc, TFP_REG_INTSTAT, u32);
 
 	u32 = bus_setup_intr(dev, sc->irq, INTR_TYPE_MISC,
 			     NULL, (driver_intr_t *)btfp_ih, sc, &sc->cookiep);
@@ -321,80 +322,80 @@ btfp_attach(device_t dev)
  * for this particular firmware release level. The actual offsets of the
  * starting addresses are retrieved from end of DPRAM, towards zero.
  */
-	sc->Inarea = DP_READ(DPRAM_LEN - 2);
+	sc->Inarea = DP_READ(sc, DPRAM_LEN - 2);
 	sc->Inarea = sc->Inarea << 8;
-	sc->Inarea += DP_READ(DPRAM_LEN - 1);
+	sc->Inarea += DP_READ(sc, DPRAM_LEN - 1);
 	device_printf(dev, "Inarea offset = %x    (0102)\n", sc->Inarea);
 
-	sc->Outarea = DP_READ(DPRAM_LEN - 4);
+	sc->Outarea = DP_READ(sc, DPRAM_LEN - 4);
 	sc->Outarea = sc->Outarea << 8;
-	sc->Outarea += DP_READ(DPRAM_LEN - 3);
+	sc->Outarea += DP_READ(sc, DPRAM_LEN - 3);
 	device_printf(dev, "Outarea offset = %x    (0082)\n", sc->Outarea);
 
-	sc->GPSarea = DP_READ(DPRAM_LEN - 6);
+	sc->GPSarea = DP_READ(sc, DPRAM_LEN - 6);
 	sc->GPSarea = sc->GPSarea << 8;
-	sc->GPSarea += DP_READ(DPRAM_LEN - 5);
+	sc->GPSarea += DP_READ(sc, DPRAM_LEN - 5);
 	device_printf(dev, "GPSarea offset = %x    (0002)\n", sc->GPSarea);
 
-	sc->YRarea = DP_READ(DPRAM_LEN - 8);
+	sc->YRarea = DP_READ(sc, DPRAM_LEN - 8);
 	sc->YRarea = sc->YRarea << 8;
-	sc->YRarea += DP_READ(DPRAM_LEN - 7);
+	sc->YRarea += DP_READ(sc, DPRAM_LEN - 7);
 	device_printf(dev, "YRarea offset = %x    (0000)\n", sc->YRarea);
 
 /*
  * Set time register format to Unix time, instead of BCD.
  * This should be the powerup state, but be certain
  */
-	DP_WRITE(sc->Inarea, TFP_TIMEREG_FMT);
-	DP_WRITE(sc->Inarea + 1, UNIX_TIME);
+	DP_WRITE(sc, sc->Inarea, TFP_TIMEREG_FMT);
+	DP_WRITE(sc, sc->Inarea + 1, UNIX_TIME);
 	btfp_do_command(sc);
 	sc->timeformat = UNIX_TIME;
 
 /* get model id, and set GPS status */
 
-	DP_WRITE(sc->Inarea, TFP_REQUEST_DATA);
-	DP_WRITE(sc->Inarea + 1, TFP_MODEL);
+	DP_WRITE(sc, sc->Inarea, TFP_REQUEST_DATA);
+	DP_WRITE(sc, sc->Inarea + 1, TFP_MODEL);
 	btfp_do_command(sc);
 
-	sc->hasGPS = (DP_READ(sc->Outarea + 5) == '7');
+	sc->hasGPS = (DP_READ(sc, sc->Outarea + 5) == '7');
 	device_printf(dev, "hasGPS = %d\n", sc->hasGPS);
 
 	if (sc->hasGPS) {
 		sc->pktrdy = 0;
 
 		/* enable GPS packet ready PCI interrupts */
-		DR_WRITE(TFP_REG_MASK, TFP_IR_GPSPKT);
+		DR_WRITE(sc, TFP_REG_MASK, TFP_IR_GPSPKT);
 
 		/* get status and determine if flywheeling or locked */
-		u32 = DR_READ(TFP_REG_TIMEREQ);	/* latches TIME0 */
-		u32 = DR_READ(TFP_REG_TIME0);
+		u32 = DR_READ(sc, TFP_REG_TIMEREQ);	/* latches TIME0 */
+		u32 = DR_READ(sc, TFP_REG_TIME0);
 
 		if (u32 & TFP_MR_FLYWHEEL)
 			device_printf(dev,
 			    "GPS flywheeling, no time lock\n");
 		else {
 			/* update TFP RTC to GPS */
-			DP_WRITE(sc->Inarea, TFP_SYNC_RTC);
+			DP_WRITE(sc, sc->Inarea, TFP_SYNC_RTC);
 			btfp_do_command(sc);
 			device_printf(dev, "GPS is locked,TFP onboard RTC synchronized\n");
 		}
 
 		/* verify GPS is providing UTC time not GPS time */
 
-		DP_WRITE(sc->Inarea, TFP_REQUEST_DATA);
-		DP_WRITE(sc->Inarea + 1, TFP_UTC_INFO_CTRL);
+		DP_WRITE(sc, sc->Inarea, TFP_REQUEST_DATA);
+		DP_WRITE(sc, sc->Inarea + 1, TFP_UTC_INFO_CTRL);
 		btfp_do_command(sc);
 
 		bzero(outstring, MAXBUFR);
-		dpr_read(outstring, sc->Outarea, 8);
+		dpr_read(sc, outstring, sc->Outarea, 8);
 
 		if (outstring[0] == TFP_UTC_INFO_CTRL) {	/* verify cmd response */
 			if (outstring[1] & GPS_TIME) {
 				/* not UTC, change it */
 				device_printf(sc->dev, "Setting GPS unit to return UTC\n");
-				DR_WRITE(TFP_REG_ACK, TFP_GPSPKT_RDY);
-				DP_WRITE(sc->Inarea, TFP_GPS_TIMEFMT);
-				DP_WRITE(sc->Inarea + 1, UTC_TIME);
+				DR_WRITE(sc, TFP_REG_ACK, TFP_GPSPKT_RDY);
+				DP_WRITE(sc, sc->Inarea, TFP_GPS_TIMEFMT);
+				DP_WRITE(sc, sc->Inarea + 1, UTC_TIME);
 				btfp_do_command(sc);
 			} else
 				device_printf(sc->dev, "GPS providing UTC time\n");
@@ -430,15 +431,7 @@ btfp_detach(device_t dev)
 	}
 	return (0);
 }
-static int
-btfp_shutdown(device_t dev)
-{
-	struct btfp_sc *sc = device_get_softc(dev);
-	device_printf(dev, "shutdown sc=%p\n", sc);
-	if (sc == NULL)
-		device_printf(dev, "Why are we here? Bye bye\n");
-	return (0);
-}
+
 /*
  * Handle PCI interrupts received on the IRQ we were assigned.
  * NB: we get called by everybody that yanks on this shared interrupt, so don't
@@ -450,10 +443,13 @@ btfp_ih(void *dmy)
 	struct btfp_sc *sc = dmy;
 	static uint32_t intr;
 
-	intr = DR_READ(TFP_REG_MASK) & DR_READ(TFP_REG_INTSTAT) & TFP_IR_ALL;
+	BTFP_LOCK(sc);
+
+	intr = DR_READ(sc, TFP_REG_MASK) & DR_READ(sc, TFP_REG_INTSTAT) & TFP_IR_ALL;
 	device_printf(sc->dev, "btfp_ih sc=%p, intr=%x\n", sc, intr);
 	if (intr == 0) {
 		device_printf(sc->dev, "btfp_ih sc=%p, intr=%x: spurious\n", sc, intr);
+		BTFP_UNLOCK(sc);
 		return (0);
 	}
 /*
@@ -462,42 +458,41 @@ btfp_ih(void *dmy)
 	if (blabber >= BLAB_INTERRUPT) {
 		device_printf(sc->dev, "ih entered intr is %#x\n", intr);
 	}
-	BTFP_LOCK(sc);
 
 	switch (intr) {
 
 	case TFP_IR_EVENTINP:	/* event input trigger */
 
-		DR_WRITE(TFP_REG_INTSTAT, TFP_IR_EVENTINP);
+		DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_EVENTINP);
 		/* XXX should be something useful */
 		break;
 
 	case TFP_IR_PERIODOUT:	/* heartbeat output */
 
-		DR_WRITE(TFP_REG_INTSTAT, TFP_IR_PERIODOUT);
+		DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_PERIODOUT);
 		/* XXX should be something useful */
 		break;
 
 	case TFP_IR_STROBE:	/* strobe input event */
 
-		DR_WRITE(TFP_REG_INTSTAT, TFP_IR_STROBE);
+		DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_STROBE);
 		/* XXX should be something useful */
 		break;
 
 	case TFP_IR_1PPSOUT:	/* pulse-per-second from GPS */
 
-		DR_WRITE(TFP_REG_INTSTAT, TFP_IR_1PPSOUT);
+		DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_1PPSOUT);
 		/* XXX should be something useful */
 		break;
 
 	case TFP_IR_GPSPKT:	/* GPS packet delivered */
 
-		DR_WRITE(TFP_REG_INTSTAT, TFP_IR_GPSPKT);	/* ack interrupts */
-		DR_WRITE(TFP_REG_ACK, TFP_GPSPKT_RDY);
+		DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_GPSPKT);	/* ack interrupts */
+		DR_WRITE(sc, TFP_REG_ACK, TFP_GPSPKT_RDY);
 
 		if (blabber >= BLAB_GPS) {
 			device_printf(sc->dev, "GPS packet %#x len %#x is ready\n",
-			    DP_READ(sc->GPSarea + 1), DP_READ(sc->GPSarea));
+			    DP_READ(sc, sc->GPSarea + 1), DP_READ(sc, sc->GPSarea));
 		}
 		sc->pktrdy = 1;	/* indicate packet ready */
 
@@ -506,29 +501,31 @@ btfp_ih(void *dmy)
 		break;
 
 	default:		/* shouldn't be here */
-		DR_WRITE(TFP_REG_INTSTAT, 0xffffffff);	/* bfmi */
+		DR_WRITE(sc, TFP_REG_INTSTAT, 0xffffffff);	/* bfmi */
 		device_printf(sc->dev, "btfp_ih called in error %x \n", intr);
 		break;
 	}
 	if (blabber >= BLAB_INTERRUPT) {
 		device_printf(sc->dev,
 		    "xit ih mask %#x intstat %#x ack %#x pktrdy %#x\n",
-		    DR_READ(TFP_REG_MASK), DR_READ(TFP_REG_INTSTAT),
-		    DR_READ(TFP_REG_ACK), sc->pktrdy);
+		    DR_READ(sc, TFP_REG_MASK), DR_READ(sc, TFP_REG_INTSTAT),
+		    DR_READ(sc, TFP_REG_ACK), sc->pktrdy);
 	}
+
 	BTFP_UNLOCK(sc);
+
 	return (0);
 }
 /*
  * Write count bytes from string src[] to offset in DPRAM in context sc
  */
 static void
-dpr_write(uint8_t * src, uint16_t offset, uint8_t count)
+dpr_write(struct btfp_sc *sc, uint8_t * src, uint16_t offset, uint8_t count)
 {
 	static uint16_t i;
 
 	for (i = 0; i < count; i++) {
-		DP_WRITE(i + offset, src[i]);
+		DP_WRITE(sc, i + offset, src[i]);
 	}
 
 	return;
@@ -537,7 +534,7 @@ dpr_write(uint8_t * src, uint16_t offset, uint8_t count)
  * Read count bytes from offset in DPRAM to string dest[] in context sc
  */
 static void
-dpr_read(uint8_t * dest, uint16_t offset, uint8_t count)
+dpr_read(struct btfp_sc *sc, uint8_t * dest, uint16_t offset, uint8_t count)
 {
 	static uint16_t i;
 
@@ -558,10 +555,9 @@ btfp_do_command(struct btfp_sc *sc)
 	static int rc;
 	static uint8_t cmd[2];
 
-	BTFP_LOCK(sc);
 	rc = 0;
-	cmd[0] = DP_READ(sc->Inarea);
-	cmd[1] = DP_READ(sc->Inarea + 1);
+	cmd[0] = DP_READ(sc, sc->Inarea);
+	cmd[1] = DP_READ(sc, sc->Inarea + 1);
 
 	if (blabber >= BLAB_CALLS) {
 		uprintf("command %#x, %#x sent to tfp\n", cmd[0], cmd[1]);
@@ -570,17 +566,17 @@ btfp_do_command(struct btfp_sc *sc)
 	gpscmd = ((cmd[0] == 0x30) || (cmd[0] == 0x31) || (cmd[0] == 0x32));
 
 	if (gpscmd == 1)
-		DR_WRITE(TFP_REG_ACK, TFP_GPSPKT_RDY);
+		DR_WRITE(sc, TFP_REG_ACK, TFP_GPSPKT_RDY);
 
-	DR_WRITE(TFP_REG_ACK, TFP_ACK_USRCMD);	/* clear response bit */
-	DR_WRITE(TFP_REG_ACK, TFP_MPUCMD_RDY);	/* tell TFP do command */
+	DR_WRITE(sc, TFP_REG_ACK, TFP_ACK_USRCMD);	/* clear response bit */
+	DR_WRITE(sc, TFP_REG_ACK, TFP_MPUCMD_RDY);	/* tell TFP do command */
 
 	for (u32 = 1; u32 < snoozer; u32++) {
-		if ((DR_READ(TFP_REG_ACK) & TFP_ACK_USRCMD))
+		if ((DR_READ(sc, TFP_REG_ACK) & TFP_ACK_USRCMD))
 			break;
 	}
 	if ((gpscmd == 1) && (u32 < snoozer)) {	/* see if gpscmd nonresp */
-		if (DP_READ(sc->GPSarea) == 0x00 ) {
+		if (DP_READ(sc, sc->GPSarea) == 0x00 ) {
 			rc = -2;
 			uprintf("Gps cmd %x %x did not return data\n", cmd[0], cmd[1]);
 		}
@@ -593,7 +589,6 @@ btfp_do_command(struct btfp_sc *sc)
 		uprintf("btfp0: Command %#x %#x timed out!! count %#x\n",
 		    cmd[0], cmd[1], u32);
 	}
-	BTFP_UNLOCK(sc);
 	return (rc);
 }
 /*
@@ -621,15 +616,27 @@ btfp_cd_read(struct cdev *dev, struct uio *uio, int ioflag)
 {
 	static uint8_t gps_pktlen;
 
+	struct btfp_sc *sc = CDEV_GET_SOFTC(dev);
+	if (sc == NULL) {
+		uprintf("btfp0: read: error: no sc - CDEV_GET_SOFTC failed\n");
+		return (ENXIO);
+	}
+
+	BTFP_LOCK(sc);
+
+	if (uio->uio_resid > MAXBUFR) {
+		BTFP_UNLOCK(sc);
+		return (ENOBUFS);
+	}
 	if (blabber > BLAB_CALLS) {
 		uprintf("btfp0: entered btfp_cd_read\n");
 	}
 	if (sc->hasGPS == 0) {
 		uio->uio_resid = 0;	/* don't come back, now, y'hear? */
+		BTFP_UNLOCK(sc);
 		uprintf("btfp0: No GPS on this TFP, read not permitted\n");
 		return (ENXIO);
 	}
-	BTFP_LOCK(sc);
 
 	if (sc->pktrdy == 0) {
 		if (EWOULDBLOCK == cv_timedwait(&sc->condvar, &sc->mutex, snoozer / 10)) {
@@ -645,9 +652,9 @@ btfp_cd_read(struct cdev *dev, struct uio *uio, int ioflag)
 	/* we have a packet ready, and we expected one, give it away */
 	sc->pktrdy = 0;		/* indicate packet picked up */
 
-	bzero(cd_bufr, MAXBUFR);
+	bzero(sc->cd_bufr, MAXBUFR);
 
-	gps_pktlen = DP_READ(sc->GPSarea);
+	gps_pktlen = DP_READ(sc, sc->GPSarea);
 
 	if (gps_pktlen == 0) {	/* TFP returned null packet, rq error */
 		BTFP_UNLOCK(sc);
@@ -655,15 +662,19 @@ btfp_cd_read(struct cdev *dev, struct uio *uio, int ioflag)
 		return (ENXIO);
 	} else {
 		gps_pktlen += 1;/* get the cid byte too */
-		dpr_read(cd_bufr, sc->GPSarea, gps_pktlen);
+		dpr_read(sc, sc->cd_bufr, sc->GPSarea, gps_pktlen);
 
-		BTFP_UNLOCK(sc);/* can't hold mutex & call uiomove */
-
-		if (EFAULT == (uiomove(cd_bufr, gps_pktlen, uio))) {
-			device_printf(sc->dev, "uiomove cd_read EFAULTED \n");
+		if (uiomove(sc->cd_bufr, gps_pktlen, uio) == EFAULT) {
+			/*
+			 * previous comment is wrong, you can hold mutex & call uiomove,
+			 * so as it is a sleep type mutex
+			 */
+			BTFP_UNLOCK(sc);
+			device_printf(sc->dev, "uiomove cd_read EFAULTED\n");
 			return (EFAULT);
 		}
 	}
+	BTFP_UNLOCK(sc);/* can't hold mutex & call uiomove */
 	return (0);
 }
 /*
@@ -676,16 +687,24 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
 	static uint8_t len;
 	static struct ACE_prq_32 *ptr;	/* map packet request */
 
+	struct btfp_sc *sc = CDEV_GET_SOFTC(dev);
+	if (sc == NULL) {
+		uprintf("btfp0: write: error: no sc - CDEV_GET_SOFTC failed\n");
+		return (ENXIO);
+	}
+
+	BTFP_LOCK(sc);		/* diddle flags, serialize */
+
 	if (blabber >= BLAB_CALLS) {
 		uprintf("btfp0: entered btfp_cd_write\n");
 	}
-	if (sc->hasGPS == 0) {
-		uprintf("btfp0: No GPS on this TFP, write not permitted\n");
-		return (ENXIO);
+	if (uio->uio_resid > MAXBUFR) {
+		BTFP_UNLOCK(sc);
+		return (ENOBUFS);
 	}
-	bzero(cd_bufr, MAXBUFR);
+	bzero(sc->cd_bufr, MAXBUFR);
 
-	rc = uiomove(cd_bufr, uio->uio_resid, uio);
+	rc = uiomove(sc->cd_bufr, uio->uio_resid, uio);
 
 	if (rc == EFAULT) {
 		if (blabber > NO_BLAB) {
@@ -693,11 +712,18 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
 			uprintf("btfp0: uiomove EFAULTED in write \n");
 		}
 		uio->uio_resid = 0;
+		BTFP_UNLOCK(sc);
 		return (ENXIO);
 	}
-	/* check command packet to see if it is really GPS command */
 
-	ptr = (struct ACE_prq_32 *)cd_bufr;	/* map the command stream */
+	if (sc->hasGPS == 0) {
+		uprintf("btfp0: No GPS on this TFP, write not permitted\n");
+		BTFP_UNLOCK(sc);
+		return (ENXIO);
+	}
+
+	/* check command packet to see if it is really GPS command */
+	ptr = (struct ACE_prq_32 *)sc->cd_bufr;	/* map the command stream */
 
 	switch (ptr->cid) {
 
@@ -712,7 +738,7 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
 	case TFP_GPS_REQPKT:
 		len = 2;	/* cid, pid only */
 		if (blabber >= BLAB_GPS) {
-			uprintf("btfp0: GPS_REQ 0x31 %#x\n", cd_bufr[1]);
+			uprintf("btfp0: GPS_REQ 0x31 %#x\n", sc->cd_bufr[1]);
 		}
 		break;
 
@@ -732,24 +758,23 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
 
 	default:		/* don't do these commands */
 		if (blabber > NO_BLAB) {
-			uprintf("btfp0: bad GPScmd %#x \n", cd_bufr[0]);
+			uprintf("btfp0: bad GPScmd %#x \n", sc->cd_bufr[0]);
 		}
+		BTFP_UNLOCK(sc);
 		return (ENXIO);
 	}
 	/* move user supplied command stream into DPRAM */
 
 	rc = len;
 
-	BTFP_LOCK(sc);		/* diddle flags, serialize */
+	dpr_write(sc, sc->cd_bufr, sc->Inarea, len);
 
-	dpr_write(cd_bufr, sc->Inarea, len);
-
-	DR_WRITE(TFP_REG_ACK, TFP_GPSPKT_RDY);	/* clear by setting! */
-	DR_WRITE(TFP_REG_INTSTAT, TFP_IR_GPSPKT);	/* so TFP will ack done */
-
-	BTFP_UNLOCK(sc);	/* unlock before calling do_command() */
+	DR_WRITE(sc, TFP_REG_ACK, TFP_GPSPKT_RDY);	/* clear by setting! */
+	DR_WRITE(sc, TFP_REG_INTSTAT, TFP_IR_GPSPKT);	/* so TFP will ack done */
 
 	btfp_do_command(sc);
+
+	BTFP_UNLOCK(sc);
 
 	uio->uio_resid = 0;	/* write is over, no matter what */
 	return (0);
@@ -758,7 +783,7 @@ btfp_cd_write(struct cdev *dev, struct uio *uio, int ioflag)
  * read unix time.
  */
 static int
-read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
+read_unix_time(struct btfp_sc *sc, struct thread *td, struct btfp_ioctl_gettime *bt)
 {
 	struct timereg timereg;
 	volatile int tmp;
@@ -769,23 +794,24 @@ read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
 	if (blabber > 0)
 		uprintf("btfp0: TFP_READ_UNIX_TIME\n");
 	/*
-	 * hold a mutex spinlock between A and D and turn off local interrupts
-	 * and to guarantee a consistent result.
+	 * hold a mutex spinlock between A and D so to turn off local interrupts.
+	 * there is intr_disable() / intr_restore() but i don't know for sure
+	 * if it's architecture independent.
 	 */
-	////////////////////////mtx_lock_spin(&sc->spin_mutex);
+	mtx_lock_spin(&sc->spin_mutex);
 	/* A */
 	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t0);
 	/* Latch and return TIME0 and TIME1 registers, providing
 	 * current time. Note: this call point is used by NTP
 	 * reference clock driver 16. */
 	/* B */
-	tmp = DR_READ(TFP_REG_TIMEREQ);
+	tmp = DR_READ(sc, TFP_REG_TIMEREQ);
 	/* C */
 	kern_clock_gettime(td, CLOCK_REALTIME, &bt->t1);
-	timereg.time0 = DR_READ(TFP_REG_TIME0);
-	timereg.time1 = DR_READ(TFP_REG_TIME1);
 	/* D */
-	////////////////////////mtx_unlock_spin(&sc->spin_mutex);
+	mtx_unlock_spin(&sc->spin_mutex);
+	timereg.time0 = DR_READ(sc, TFP_REG_TIME0);
+	timereg.time1 = DR_READ(sc, TFP_REG_TIME1);
 	bt->time.tv_sec = (long)timereg.time1 & 0xffffffffL;
 	bt->time.tv_nsec = ((long)timereg.time0 & 0xfffffL) * 1000L +
 			    (long)((timereg.time0 >> 20) & 0xf) * 100L;
@@ -804,7 +830,7 @@ read_unix_time(struct thread *td, struct btfp_ioctl_gettime *bt)
  * requested time, possibly advancing time request if we go over.
  */
 static int
-pre_write_unix_time(struct thread *td, struct set_unixtime *su)
+pre_write_unix_time(struct btfp_sc *sc, struct thread *td, struct set_unixtime *su)
 {
 	struct btfp_ioctl_gettime bt;
 	int rc;
@@ -815,7 +841,6 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 		return (EINVAL);
 	}
 
-	BTFP_LOCK(sc);
 	/*
 	 * FROM USER MANUAL:
 	 * To prevent ambiguities in the time, the user must issue this command
@@ -838,19 +863,17 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	/*
 	 * before we actually set the time
 	 */
-	rc = read_unix_time(td, &bt);
+	rc = read_unix_time(sc, td, &bt);
 	if (rc < 0) {
 		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: initial READ_TIME failed %d\n", rc);
-		BTFP_UNLOCK(sc);
 		return (rc);
 	}
 	current_unix_time = bt.time.tv_sec;
 	device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: initial time %ld.%09ld\n", bt.time.tv_sec, bt.time.tv_nsec);
 	for (i = 0; i < 50; i++) {
-		rc = read_unix_time(td, &bt);
+		rc = read_unix_time(sc, td, &bt);
 		if (rc < 0) {
 			device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: READ_TIME failed %d\n", rc);
-			BTFP_UNLOCK(sc);
 			return (rc);
 		}
 		if (blabber > 0)
@@ -864,7 +887,6 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 				su->unix_time++;
 			} else {
 				device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: #%d: found synch epoch - initial second rolled over too much %ld/%ld\n", i, current_unix_time, bt.time.tv_sec);
-				BTFP_UNLOCK(sc);
 				return (-EBUSY);
 			}
 			break;
@@ -873,7 +895,6 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	}
 	if (i >= 50) {
 		device_printf(sc->dev, "btfp0: TFP_WRITE_UNIX_TIME: could not synchronize within one-second epoch\n");
-		BTFP_UNLOCK(sc);
 		return (-EBUSY);
 	}
 	device_printf(sc->dev, "btftp0: [2] write_unix_time t=%u(%08x), be=%08x\n", su->unix_time, su->unix_time, htonl(su->unix_time));
@@ -888,7 +909,6 @@ pre_write_unix_time(struct thread *td, struct set_unixtime *su)
 	 */
 	su->unix_time = htobe32(su->unix_time);
 	su->zero_filler = 0U;
-	BTFP_UNLOCK(sc);
 	/* should hold the lock all the way to command */
 	return 0;
 }
@@ -904,6 +924,14 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 	static uint32_t callno, rc, tmp, u32, *u32_p;
 	static uint8_t *u8_p, len;
 	static union btfp_ioctl_out *btfpctl_p;
+
+	struct btfp_sc *sc = CDEV_GET_SOFTC(dev);
+	if (sc == NULL) {
+		uprintf("btfp0: ioctl: error: no sc - CDEV_GET_SOFTC failed\n");
+		return (ENXIO);
+	}
+
+	BTFP_LOCK(sc);
 
 	callno = IOCNUM(cmd);	/* mask off the ioctl control info */
 
@@ -925,21 +953,21 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 
 	switch (callno) {
 	case TFP_READ_UNIX_TIME:
-		rc = read_unix_time(td, (struct btfp_ioctl_gettime *)arg);
+		rc = read_unix_time(sc, td, (struct btfp_ioctl_gettime *)arg);
 		break;
 	case TFP_WRITE_UNIX_TIME:
-		rc = pre_write_unix_time(td, (struct set_unixtime *)arg);
+		rc = pre_write_unix_time(sc, td, (struct set_unixtime *)arg);
 		if (rc == 0)
 			len = 5;
 		break;
 	case TFP_LATCH_TIMEREG:
 		/* Latch current time into TIME0 & TIME1 registers. */
-		DR_READ(TFP_REG_TIMEREQ);
+		DR_READ(sc, TFP_REG_TIMEREQ);
 		break;
 
 	case TFP_LATCH_EVENTREG:
 		/* Latch current time into EVENT0 & EVENT1 registers. */
-		DR_READ(TFP_REG_EVENTREQ);
+		DR_READ(sc, TFP_REG_EVENTREQ);
 		break;
 
 	case TFP_UNLOCK_CAPTURE:
@@ -947,11 +975,11 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 		 * time will be captured. Does not effect interrupt
 		 * generation. Control capture lockout with CAPLOCK_ENABLE /
 		 * CAPLOCK_DISABLE. */
-		DR_READ(TFP_REG_UNLOCK);
+		DR_READ(sc, TFP_REG_UNLOCK);
 		break;
 
 	case TFP_POR:		/* software reset of TFP */
-		dpr_write(u8_p, sc->Inarea, 1);
+		dpr_write(sc, u8_p, sc->Inarea, 1);
 		rc = btfp_do_command(sc);
 		uprintf("TFP software reset initiated, rc = %#x\n", rc);
 		break;
@@ -960,7 +988,7 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 	case TFP_SYNC_RTC:
 		/* FALLTHROUGH */
 	case TFP_BATT_DISCON:
-		dpr_write(u8_p, sc->Inarea, 1);
+		dpr_write(sc, u8_p, sc->Inarea, 1);
 		rc = btfp_do_command(sc);
 		break;
 
@@ -1041,9 +1069,9 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 			rc = ENOTTY;
 		}		/* end TFP_REQUEST_DATA switch */
 
-		dpr_write(u8_p, sc->Inarea, 2);	/* write cmd/subcmd */
+		dpr_write(sc, u8_p, sc->Inarea, 2);	/* write cmd/subcmd */
 		rc = btfp_do_command(sc);
-		dpr_read(u8_p, sc->Outarea, len);
+		dpr_read(sc, u8_p, sc->Outarea, len);
 		break;
 
 /*
@@ -1053,48 +1081,48 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 		/* Latch and return TIME0 and TIME1 registers, providing
 		 * current time. Note: this call point is used by NTP
 		 * reference clock driver 16. */
-		tmp = DR_READ(TFP_REG_TIMEREQ);
-		timereg_p->time0 = DR_READ(TFP_REG_TIME0);
-		timereg_p->time1 = DR_READ(TFP_REG_TIME1);
+		tmp = DR_READ(sc, TFP_REG_TIMEREQ);
+		timereg_p->time0 = DR_READ(sc, TFP_REG_TIME0);
+		timereg_p->time1 = DR_READ(sc, TFP_REG_TIME1);
 		break;
 
 	case TFP_READ_EVENTREG:
-		tmp = DR_READ(TFP_REG_EVENTREQ);
-		timereg_p->time0 = DR_READ(TFP_REG_EVENT0);
-		timereg_p->time1 = DR_READ(TFP_REG_EVENT1);
+		tmp = DR_READ(sc, TFP_REG_EVENTREQ);
+		timereg_p->time0 = DR_READ(sc, TFP_REG_EVENT0);
+		timereg_p->time1 = DR_READ(sc, TFP_REG_EVENT1);
 		break;
 
 	case TFP_SET_REG_CONTROL:
 		u32 = (uint32_t) * arg;
 		u32 &= ~TFP_CR_RESERVED;
-		DR_WRITE(TFP_REG_CONTROL, u32);
+		DR_WRITE(sc, TFP_REG_CONTROL, u32);
 		break;
 
 	case TFP_FETCH_REG_CONTROL:
 		u32_p = (uint32_t *) arg;
-		*u32_p = DR_READ(TFP_REG_CONTROL);
+		*u32_p = DR_READ(sc, TFP_REG_CONTROL);
 		break;
 
 	case TFP_SET_REG_MASK:
 		u32 = (uint32_t) * arg;
 		u32 &= TFP_IR_ALL;
-		DR_WRITE(TFP_REG_MASK, u32);
+		DR_WRITE(sc, TFP_REG_MASK, u32);
 		break;
 
 	case TFP_FETCH_REG_MASK:
 		u32_p = (uint32_t *) arg;
-		*u32_p = DR_READ(TFP_REG_MASK);
+		*u32_p = DR_READ(sc, TFP_REG_MASK);
 		break;
 
 	case TFP_SET_REG_INTSTAT:
 		u32 = (uint32_t) * arg;
 		u32 &= TFP_IR_ALL;
-		DR_WRITE(TFP_REG_INTSTAT, u32);
+		DR_WRITE(sc, TFP_REG_INTSTAT, u32);
 		break;
 
 	case TFP_FETCH_REG_INTSTAT:
 		u32_p = (uint32_t *) arg;
-		*u32_p = DR_READ(TFP_REG_INTSTAT);
+		*u32_p = DR_READ(sc, TFP_REG_INTSTAT);
 		break;
 
 	case TFP_BTFPCTL:
@@ -1359,20 +1387,24 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 		break;
 
 	default:
+		BTFP_UNLOCK(sc);
 		return (ENOTTY);
 	}
 
 	if (len != 0) {
-		dpr_write(u8_p, sc->Inarea, len);
+		dpr_write(sc, u8_p, sc->Inarea, len);
 		rc = btfp_do_command(sc);
 	}
+
+	BTFP_UNLOCK(sc);
 
 	return (rc);
 }				/* end btfp_cd_ioctl() function */
 
 /*
- * not clear to me why this is a singleton driver, given it is,
- * at least put some protection against multiple cards.
+ * I've made the driver multi-card ready, but I only have one card,
+ * so I couldn't test the few changes needed to make it truly multicard.
+ * This struct acts as serializer for single card init.
  */
 static struct cdev *b_tfp_dev = NULL;	/* devfs make/destroy  */
 

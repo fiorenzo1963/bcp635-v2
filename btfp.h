@@ -24,18 +24,23 @@
  * SUCH DAMAGE.
  *
  */
+
 /*
  * btfp.h
  * Header file for the Symmetricom bc637-U PCI card, with GPS option
  * 
  * NB: the bc635/637 is a big-endian device. Intel is little-endian. Enjoy.
  */
+
+/* maximum buffer length for read/write */
+#define MAXBUFR 		512	/* 255 * 2 (pkt in/out) + 1 * 2 (pkt id in/out) */
+
 #ifdef _KERNEL
 /* 
  * structure describing the TFP card to the driver
  */
 struct btfp_sc {
-    device_t			dev;		/* card pointer							*/
+	device_t			dev;		/* card pointer							*/
 	struct resource 	*bar0res;	/* Control regs BAR0 based				*/
 	bus_space_handle_t	bsh0;		/* BAR0 bus space handle				*/
 	bus_space_tag_t		bst0;		/* BAR0 bus space tag					*/
@@ -48,37 +53,39 @@ struct btfp_sc {
 	struct cv			condvar;	/* locking condition variable			*/
 	void				*cookiep;	/* IRQ cookie - teardown				*/
 	uint16_t 			Inarea;		/* Input Area offset					*/
- 	uint16_t			Outarea;	/* Output Area offset					*/
+	uint16_t			Outarea;	/* Output Area offset					*/
 	uint16_t 			GPSarea;	/* GPS Packet Area offset				*/
 	uint16_t 			YRarea;	 	/* Year Area offset						*/
 	uint8_t				hasGPS; 	/* GPS present flag						*/
 	uint8_t				pktrdy;		/* GPS packet ready for pickup			*/
 	uint8_t				timeformat;
+	uint8_t			cd_bufr[MAXBUFR];/* to/fro cd_read/cd_write functions */
 };
 /* 
  * char device driver stuff 
  */
-static 	d_open_t	btfp_cd_open;
-static  d_close_t	btfp_cd_close;
-static  d_read_t	btfp_cd_read;
-static  d_write_t	btfp_cd_write;
-static  d_ioctl_t	btfp_cd_ioctl;
+static d_open_t		btfp_cd_open;
+static d_close_t	btfp_cd_close;
+static d_read_t		btfp_cd_read;
+static d_write_t	btfp_cd_write;
+static d_ioctl_t	btfp_cd_ioctl;
 
 /* read a device register off BAR0 */
-#define DR_READ(reg)	(bus_space_read_4(sc->bst0, sc->bsh0, (reg)))
+#define DR_READ(sc, reg)	(bus_space_read_4((sc)->bst0, (sc)->bsh0, (reg)))
 
 /* write a device register off BAR0 */
-#define DR_WRITE(reg,data)	(bus_space_write_4(sc->bst0, sc->bsh0, (reg) \
-				,(data)))
+#define DR_WRITE(sc, reg, data)	(bus_space_write_4((sc)->bst0, (sc)->bsh0, (reg), (data)))
 
 /* write a byte to a DPRAM offset */
-#define DP_WRITE(off,byt) (bus_space_write_1(sc->bst1, sc->bsh1, (off), (byt)))
+#define DP_WRITE(sc, off, byt)  (bus_space_write_1((sc)->bst1, (sc)->bsh1, (off), (byt)))
 
 /* read a byte from a DPRAM offset */
-#define DP_READ(off)		(bus_space_read_1(sc->bst1, sc->bsh1, (off)))
+#define DP_READ(sc, off)		(bus_space_read_1((sc)->bst1, (sc)->bsh1, (off)))
 
 #define BTFP_LOCK(_sc)          mtx_lock(&(_sc)->mutex)
 #define BTFP_UNLOCK(_sc)        mtx_unlock(&(_sc)->mutex) 
+
+#define CDEV_GET_SOFTC(x)	((x)->si_drv1)
 
 #define BC637_VENDOR_ID			0x12e2 
 #define BC637_DEVICE_ID			0x4013 
@@ -218,8 +225,6 @@ struct btfp_ioctl_gettime {
  * NB: The access to the DPRAM is 8 bits wide, 1 byte. This implies and
  * requires bus_space_read_1() access. 
  */
-/* maximum buffer length for read/write */
-#define MAXBUFR 		512	/* 255 * 2 (pkt in/out) + 1 * 2 (pkt id in/out) */
 
 /*
  * I really should set this dynamically after determining system HZ rate.
