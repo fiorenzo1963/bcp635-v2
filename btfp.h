@@ -380,18 +380,16 @@ struct btfp_ioctl_gettime {
  * register will enable the next event time to be captured.
  */
 #	define TFP_CR_LOCKEN	 	0x01	/* Event capture lockout enable		*/
-										/* =1 Enable lockout				*/
-										/* =0 Disable lockout				*/
-
+							/* =1 Enable lockout */
+							/* =0 Disable lockout */
 #	define TFP_CR_EVSOURCE	 	0x02	/* Event source select				*/
-										/* =1 rising edge trigger from PPO 	*/	
-										/* =0 event input triggered			*/
-
+							/* =1 rising edge trigger from PPO */	
+							/* =0 event input triggered */
 #	define TFP_CR_EVSENSE 	 	0x04	/* Event input edge select			*/
-										/* =1 Rising edge active (falling on*/
-										/*	12083 boards.					*/
-									 	/* =0 Falling edge active (rising on*/ 
-										/*	12083 boards.					*/	
+							/* =0 Rising edge active (falling on*/
+							/*	12083 boards. */
+						/* =0 Falling edge active (rising on*/ 
+							/*	12083 boards. */	
 /*
  * TFP_CR_EVENTEN:
  * Control external trigger ability to latch time into EVENT0/1 registers.
@@ -399,18 +397,25 @@ struct btfp_ioctl_gettime {
  * mask.  Select source of trigger with TFP_CR_EVSOURCE. 
  */
 #	define TFP_CR_EVENTEN	 	0x08	/* Event capture register enable =1	*/
- 
 
-#	define TFP_CR_STREN			0x10	/* =1 enable strobe output 			*/
-										/* =0 strobe output held low		*/
+#	define TFP_CR_STREN		0x10	/* =1 enable strobe output */
+						/* =0 strobe output held low */
 #	define TFP_CR_STRMODE	 	0x20	/* Time coincidence Strobe mode		*/
-										/* =1 Use minor time only ->PPS out	*/
-										/* =0 Use major & minor time 		*/
+							/* =1 Use minor time only ->PPS out */
+							/* =0 Use major & minor time */
 #	define TFP_CR_FREQSEL0	 	0x40	/* 2bit field.						*/
-										/* 00 = 10Mhz.	01 = 5Mhz.			*/
-										/* 1x = 1Mhz.						*/
+							/* 00 = 10Mhz.	01 = 5Mhz. */
+							/* 1x = 1Mhz. */
 #	define TFP_CR_FREQSEL1	 	0x80	/* hi bit of 2bit freq select		*/
-#define	TFP_CR_RESERVED			0xffffff00	/* reserved bits 				*/
+#	define TFP_CR_LOCKEN2		0x0100	/* Event2 catpure register enable =1 */
+#	define TFP_CR_EVSENSE2		0x0200
+#	define TFP_CR_EVENTEN2		0x0400
+#	define TFP_CR_RESERVED2		0x0800
+#	define TFP_CR_LOCKEN3		0x1000	/* Event3 catpure register enable =1 */
+#	define TFP_CR_EVSENSE3		0x2000
+#	define TFP_CR_EVENTEN3		0x4000
+#	define TFP_CR_RESERVED3		0x8000
+#define	TFP_CR_RESERVED			0xffff8800	/* reserved bits 				*/
 
 #define TFP_REG_ACK	 			0x14
 										/* ACK register flags 				*/

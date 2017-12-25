@@ -57,6 +57,53 @@ main(int argc, char **argv)
 		syslog(LOG_INFO,"btfp disruptive test program is starting\n");
 		printf("This program causes loss of time lock for ~ 2 min\n");
 	}
+
+/*
+ * display control register
+ */
+	bzero(&btm, sizeof(btm));
+	btm.inarea.cmd = TFP_FETCH_REG_CONTROL;
+	if ((i = ioctl(fd, BTFP_FETCH_REG_CONTROL, &btm)) != 0)
+		printf(" ioctl fetch_reg_control failed rc = %x\n", i);
+	else {
+		printf("control register = 0x%x\n", btm.ctrlreg);
+		printf("control register = 0x%x [reserved bits zeroed]\n", (btm.ctrlreg & ~TFP_CR_RESERVED));
+		printf("    EVENT1 capture lockout = %s\n",
+				((btm.ctrlreg & TFP_CR_LOCKEN) ? "enabled" : "disabled"));
+		printf("    EVENT1 source select = %s\n",
+				((btm.ctrlreg & TFP_CR_EVSOURCE) ?
+				 "rising edge from PPO" : "event input triggered"));
+		printf("    EVENT1 input edge select = %s\n",
+				((btm.ctrlreg & TFP_CR_EVSENSE) ?
+				 "rising edge" : "falling edge"));
+		printf("    EVENT0/1 capture register = %s\n",
+				((btm.ctrlreg & TFP_CR_EVENTEN) ? "enabled" : "disabled"));
+		printf("    Strobe output = %s\n",
+				((btm.ctrlreg & TFP_CR_STREN) ? "enabled" : "disabled"));
+		printf("    Time coincidence Strobe mode = %s\n",
+				((btm.ctrlreg & TFP_CR_STRMODE) ?
+				 "minor time only -> PPS out" : "major & minor time"));
+		printf("    Frequency select = %s\n",
+				((btm.ctrlreg & TFP_CR_FREQSEL1) ? "1 Mhz" :
+				 ((btm.ctrlreg & TFP_CR_FREQSEL0) ? "10 Mhz" : "5 Mhz")));
+
+		printf("    EVENT2 capture lockout = %s\n",
+				((btm.ctrlreg & TFP_CR_LOCKEN2) ? "enabled" : "disabled"));
+		printf("    EVENT2 input edge select = %s\n",
+				((btm.ctrlreg & TFP_CR_EVSENSE2) ?
+				 "rising edge" : "falling edge"));
+		printf("    EVENT2 capture register = %s\n",
+				((btm.ctrlreg & TFP_CR_EVENTEN2) ? "enabled" : "disabled"));
+
+		printf("    EVENT3 capture lockout = %s\n",
+				((btm.ctrlreg & TFP_CR_LOCKEN3) ? "enabled" : "disabled"));
+		printf("    EVENT3 input edge select = %s\n",
+				((btm.ctrlreg & TFP_CR_EVSENSE3) ?
+				 "rising edge" : "falling edge"));
+		printf("    EVENT3 capture register = %s\n",
+				((btm.ctrlreg & TFP_CR_EVENTEN3) ? "enabled" : "disabled"));
+	}
+
 /*
  * Read time and determine if locked to source or flywheeling
  */
