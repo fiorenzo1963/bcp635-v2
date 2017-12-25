@@ -138,6 +138,10 @@ struct	timecode	{					/* timecode format */
 		uint8_t		id;
 		uint8_t		timecode;
 }__attribute__((packed));
+struct	timecodemodulation	{				/* timecode modulation type (M or D) */
+		uint8_t		id;
+		uint8_t		modulation;
+}__attribute__((packed));
 struct  propdelay	{					/* propagation delay */
 		uint8_t		id;
 		int32_t		propdelay;
@@ -170,12 +174,13 @@ struct  set_unixtime	{
 union btfp_ioctl_out	{						/* best declared volatile */
 		struct		btfp_inarea	inarea;			/* pass cmd/subcmd in */
 		struct		timereg		timereg;		/* card registers */
-		uint32_t	ctrlreg;					/* control register */
-		uint32_t	intmask;					/* PCI interrupt mask */
-		uint32_t	intstat;					/* TFP interrupt status */
+		uint32_t	ctrlreg;				/* control register */
+		uint32_t	intmask;				/* PCI interrupt mask */
+		uint32_t	intstat;				/* TFP interrupt status */
+		struct		timecodemodulation timecodemodulation;
 		struct		timemode	timemode;
 		struct		timefmt		timefmt;
-		struct		ppo			ppo;
+		struct		ppo		ppo;
 		struct		timecode	timecode;
 		struct		propdelay	propdelay;
 		struct		jamsync		jamsync;

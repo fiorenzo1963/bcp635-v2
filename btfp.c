@@ -159,6 +159,13 @@
 #define htobe32(x)	htonl((x))
 #endif
 
+/*
+ * I've made the driver multi-card ready, but I only have one card,
+ * so I couldn't test the few changes needed to make it truly multicard.
+ * This struct acts as serializer for single card init.
+ */
+static struct cdev *b_tfp_dev = NULL;	/* devfs make/destroy  */
+
 /* Prototypes - PCI bus interface routines */
 
 static int btfp_probe(device_t dev);
@@ -238,6 +245,9 @@ btfp_attach(device_t dev)
 {
 	static uint32_t u32;
 	static uint8_t outstring[MAXBUFR];
+
+	uprintf("btfp_attach, dev=0x%p\n", dev);
+
 	struct btfp_sc *sc = device_get_softc(dev);
 	if (sc == NULL) {
 		device_printf(dev, "softc allocation failed\n");
@@ -403,6 +413,11 @@ btfp_attach(device_t dev)
 			device_printf(sc->dev,
 			    "GPS UTC query command error, GPS unit is suspect.\n");
 	}
+
+	device_printf(sc->dev, "making device %s\n", DEVNAME);
+	b_tfp_dev = make_dev(&btfp_cdevsw, 0, UID_ROOT, GID_WHEEL, DEV_PERMISSIONS, DEVNAME);
+	b_tfp_dev->si_drv1 = sc;
+
 	return (0);
 }
 /*
@@ -413,7 +428,7 @@ btfp_detach(device_t dev)
 {
 	struct btfp_sc *sc = device_get_softc(dev);
 
-	device_printf(dev, "btfp_detach\n");
+	device_printf(dev, "btfp_detach dev=%p\n", dev);
 
 	bus_teardown_intr(dev, sc->irq, sc->cookiep);
 
@@ -1402,13 +1417,6 @@ btfp_cd_ioctl(struct cdev *dev, u_long cmd, caddr_t arg, int flag, struct thread
 }				/* end btfp_cd_ioctl() function */
 
 /*
- * I've made the driver multi-card ready, but I only have one card,
- * so I couldn't test the few changes needed to make it truly multicard.
- * This struct acts as serializer for single card init.
- */
-static struct cdev *b_tfp_dev = NULL;	/* devfs make/destroy  */
-
-/*
  * Module load/unload event handler.
  */
 static int
@@ -1422,8 +1430,6 @@ btfp_load(struct module *m, int event, void *arg)
 			return (ENODEV);
 		}
 		uprintf("Loading bc635/bc637PCI-U Time & Frequency Processor driver.\n");
-		b_tfp_dev = make_dev(&btfp_cdevsw, 0, UID_ROOT, GID_WHEEL, DEV_PERMISSIONS, DEVNAME);
-		uprintf("bc635/bc637PCI-U Time & Frequency Processor driver loaded.\n");
 		uprintf("bc635/bc637PCI-U TFP device is %s\n", DEVNAME);
 		break;
 

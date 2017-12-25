@@ -45,7 +45,6 @@ int
 main(int argc, char **argv)
 {
 	int i, fd;
-	struct timemode tmode;
 	union btfp_ioctl_out	btfp;
 	time_t t;
 
@@ -58,9 +57,19 @@ main(int argc, char **argv)
 		printf("Open of tfp device %s: fd=%d\n", btfp_dev, fd);
 	}
 
-	tmode.id = TFP_TIMEMODE;
-	tmode.mode = TIMEMODE_PPS;
-	if ((i = ioctl(fd, BTFP_TIMEMODE, &tmode)) != 0) {
+	bzero(&btfp, sizeof (btfp));
+	btfp.timecodemodulation.id = TFP_CODE_MODULATION;
+	btfp.timecodemodulation.modulation = DCLS_PCM; /* 'D' DC level shift */
+	if ((i = ioctl(fd, BTFP_CODE_MODULATION, &btfp)) != 0) {
+		printf(" ioctl set timecode modulation DC level failed rc = %x, errno = %d\n", i, errno);
+		exit(2);
+	}
+	printf("timecode modulation DC level set\n");
+
+	bzero(&btfp, sizeof (btfp));
+	btfp.timemode.id = TFP_TIMEMODE;
+	btfp.timemode.mode = TIMEMODE_PPS;
+	if ((i = ioctl(fd, BTFP_TIMEMODE, &btfp)) != 0) {
 		printf(" ioctl set timemode pps failed rc = %x, errno = %d\n", i, errno);
 		exit(2);
 	}
