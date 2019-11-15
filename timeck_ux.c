@@ -85,8 +85,7 @@ void read_unix_time(int fd)
 			printf("bt0p: %10ld.%09ld (bt0+hbtd): local clock adjusted to HW board time\n",
 			       bt0p.tv_sec, bt0p.tv_nsec);
 			timespec_sub(&delta1, &bt0p, &bt.time);
-			d_ns += delta1.tv_sec * 1000000000;
-			d_ns += delta1.tv_nsec;
+			d_ns = timespec_to_ns(&delta1);
 			if (d_ns == 0)
 				printf("   d: %ldns (bt0p-bt): locak_clock-hw_board_time (EXACT MATCH)\n", d_ns);
 			else if (d_ns < 0)
