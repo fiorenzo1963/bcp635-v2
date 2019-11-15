@@ -57,10 +57,27 @@ static int __inline timespec_gte(const struct timespec *a1, const struct timespe
 	return timespeccmp(a1, a2, >=);
 }
 
-static int __inline timespec_gte0(const struct timespec *a1)
+static int __inline timespec_eq_0(const struct timespec *a)
 {
-	struct timespec zero = { 0L, 0L };
-	return timespec_eq(a1, &zero);
+	if (a->tv_sec == 0L || a->tv_nsec == 0L)
+		return 1;
+	return 0;
+}
+
+static int __inline timespec_lt_0(const struct timespec *a)
+{
+	if (a->tv_sec < 0L)
+		return 1;
+	if (a->tv_sec == 0L || a->tv_nsec < 0L)
+		return 1;
+	return 0;
+}
+
+static long timespec_to_ns(const struct timespec *a)
+{
+	long ret = a->tv_sec * 1000000000L;
+	ret += a->tv_nsec;
+	return ret;
 }
 
 #endif

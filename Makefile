@@ -1,5 +1,6 @@
-SRCS=btfp.c bus_if.h device_if.h pci_if.h btfp.h ACEiii.h
-KMOD=btfp
+SRCS := btfp.c bus_if.h device_if.h pci_if.h btfp.h ACEiii.h
+KMOD := btfp
+APPS := blab btfp_setup btfp_test gpst timeck timeck_ux timeck_ux2 timeck_ux3 bcm635_shm
 
 #
 # default target will build both the kernel driver and
@@ -23,25 +24,20 @@ timeck:	timeck.c btfp.h timespec_ops.h
 	cc timeck.c -o timeck -Wall
 timeck_ux: timeck_ux.c btfp.h timespec_ops.h
 	cc timeck_ux.c -o timeck_ux -Wall
+timeck_ux2: timeck_ux2.c btfp.h timespec_ops.h
+	cc timeck_ux2.c -o timeck_ux2 -Wall
+timeck_ux3: timeck_ux3.c btfp.h timespec_ops.h
+	cc timeck_ux3.c -o timeck_ux3 -Wall
 bcp635_shm: bcp635_shm.c btfp.h timespec_ops.h
 	cc bcp635_shm.c -o bcp635_shm -Wall
 
-apps: gpst blab btfp_test timeck timeck_ux btfp_setup bcp635_shm
+apps: $(APPS)
 
 #
 # clean everything
 #
 _clean clean_ cleanup distclean:
-	make clean
-	make clean_apps
-	rm -f .depend.btfp.o
-
-#
-# clean apps
-#
-clean_apps:
-	rm -f *.o core *.core
-	rm -f gpst blab timeck btfp_test btfp_setup timeck_ux bcp635_shm
+	rm -f .depend.btfp.o *.o core *.core $(APPS)
 
 install: btfp.ko
 	cp btfp.ko /boot/kernel/btfp.ko
